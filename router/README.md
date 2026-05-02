@@ -77,14 +77,21 @@ But Fly's registry is **per-app** — `registry.fly.io/<app-name>:<tag>` — so
 destroying the template app deletes its registry namespace. Use a stable
 `rosey-template` app dedicated to that purpose.
 
-To update the household VM image (e.g. ship a bug fix to all NEW households):
+To ship code changes to the whole fleet (router + template + every live
+household VM) in one go:
 
 ```bash
-cd <repo-root>
-fly deploy --remote-only --config fly.toml --dockerfile Dockerfile -a rosey-template
-# new households deploy with the new image; existing households keep their
-# pinned digest until they're individually re-deployed (see scripts/migrate_all.py).
+./scripts/deploy.sh                # all four steps
+./scripts/deploy.sh --skip-router  # household fleet only (router unchanged)
+./scripts/deploy.sh --router-only  # just the router (no household roll)
 ```
+
+Under the hood that runs: `fly deploy -a rosey-router` →
+`fly deploy -a rosey-template` (image push) →
+`fly machines stop -a rosey-template` →
+`fly ssh console -a rosey-router -C "python /app/router/scripts/migrate_all.py"`
+(loops the tenant DB, redeploys each household VM from the new image).
+Volumes survive deploys, so household memory is preserved.
 
 ## Deploy the router
 
