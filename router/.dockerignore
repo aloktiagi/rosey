@@ -1,0 +1,8 @@
+__pycache__
+*.pyc
+.venv
+tests
+*.db
+*.log
+fly.toml
+README.md

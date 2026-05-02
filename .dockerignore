@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+.env
+.env.example
+memories
+.claude
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.log
+router.db

@@ -1,0 +1,37 @@
+# Single-tenant Rosey deploy on Fly.
+# Customize: `fly launch --no-deploy --copy-config --name <your-bot-name>`
+# See https://fly.io/docs/reference/configuration/
+
+app = 'rosey-bot'
+primary_region = 'sjc'
+
+[build]
+
+[env]
+  MEMORY_ROOT = '/data/memories'
+  ROSEY_ENABLE_SCHEDULER = '1'
+  SCHEDULER_TZ = 'America/Los_Angeles'
+
+[[mounts]]
+  source = 'memory_data'
+  destination = '/data'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'off'
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ['app']
+
+  [[http_service.checks]]
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/health'
+
+[[vm]]
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 256

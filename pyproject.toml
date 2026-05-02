@@ -1,0 +1,31 @@
+[project]
+name = "rosey"
+version = "0.1.0"
+description = "Telegram-driven household assistant (Claude memory tool + Telegram bot)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = [
+    "anthropic>=0.80",
+    "flask>=3.0",
+    "python-dotenv>=1.0",
+    "apscheduler>=3.10",
+    "tomli>=2.0; python_version < '3.11'",
+    "gunicorn>=21.0",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+telegram = ["python-telegram-bot>=21.0"]
+
+[project.urls]
+Homepage = "https://github.com/aloktiagi/rosey"
+Repository = "https://github.com/aloktiagi/rosey"
+Issues = "https://github.com/aloktiagi/rosey/issues"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["memory_tool", "agent", "cli", "app", "summary", "household", "reminders", "telegram_bot", "transcribe", "channels", "paths", "reminder_format", "roster", "tools"]
