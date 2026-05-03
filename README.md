@@ -24,6 +24,17 @@ Rosey:  ✓ I'll nudge you at 09:00 Fri.
 
 ---
 
+## Requirements
+
+- **Python 3.9+** (`python3 --version`). The Docker image uses 3.11; local dev works on 3.9+.
+- **git** (`git --version`).
+- **A Telegram bot token** — get one from [@BotFather](https://t.me/BotFather) (free, ~30s).
+- **An Anthropic API key** — [console.anthropic.com](https://console.anthropic.com) → API Keys.
+- **OpenAI API key** *(optional)* — only if you want voice-note transcription via Whisper.
+- **flyctl** — *only* if you want to deploy to Fly.io. Install: <https://fly.io/docs/hands-on/install-flyctl/>.
+
+---
+
 ## Quickstart (self-host with Telegram, ~10 min)
 
 The fastest setup. Runs anywhere — your laptop, a Raspberry Pi, or a Fly.io VM.

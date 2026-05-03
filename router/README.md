@@ -93,6 +93,9 @@ Under the hood that runs: `fly deploy -a rosey-router` →
 (loops the tenant DB, redeploys each household VM from the new image).
 Volumes survive deploys, so household memory is preserved.
 
+Requires `flyctl` (logged in) and `bash` + `python3` locally; the script
+shells into the router VM for the migration step.
+
 ## Deploy the router
 
 ```bash
