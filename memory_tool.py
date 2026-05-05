@@ -59,6 +59,18 @@ class FileMemoryTool(BetaLocalFilesystemMemoryTool):
 
     @override
     def str_replace(self, command: BetaMemoryTool20250818StrReplaceCommand) -> str:
+        # Reject empty old_str up front. The SDK's str_replace uses
+        # `content.count(old_str)`, which returns len(content)+1 for an
+        # empty needle and triggers the "multiple occurrences" branch with
+        # a line number for every position in the file — a multi-KB error
+        # blob that wastes tokens and confuses the model.
+        if command.old_str == "":
+            raise ToolError(
+                "old_str must not be empty. To insert text, use the `insert` "
+                "command; to overwrite a file, delete and recreate it."
+            )
+        if command.old_str == command.new_str:
+            raise ToolError("old_str and new_str are identical — nothing to replace.")
         target = self._validate_path(command.path)
         if target.is_file():
             content = target.read_text(encoding="utf-8")

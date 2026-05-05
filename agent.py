@@ -249,12 +249,21 @@ def handle_message(
     messages: List[dict] = [{"role": "user", "content": user_content}]
     client = _client()
 
+    # Cache the system prompt. Within a single handle_message call the agent
+    # loop typically makes 4–8 API calls that all share the same system block;
+    # marking it ephemeral makes iteration N>=2 read from cache (~10% of input
+    # cost) instead of re-billing ~3KB of prompt. Same-minute calls across
+    # messages also hit the cache when the interpolated `now_local` matches.
+    cached_system = [
+        {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+    ]
+
     response = None
     for _ in range(MAX_TOOL_ITERATIONS):
         response = client.beta.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=system_prompt,
+            system=cached_system,
             tools=tools,
             messages=messages,
         )

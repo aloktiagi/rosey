@@ -23,6 +23,7 @@ import asyncio
 import io
 import logging
 import os
+import re
 import sys
 
 from dotenv import load_dotenv
@@ -33,19 +34,31 @@ from agent import handle_message
 
 log = logging.getLogger("rosey.telegram")
 
+# Trigger words that count as "addressing Rosey" in a group chat. Matched
+# case-insensitively, must be the first word and followed by space/comma/colon
+# (or be the whole message).
+_NAME_PREFIXES = ("hey rosey", "rosey")
 
-def _is_authorized(chat_id: int) -> bool:
+
+def _is_authorized(chat, user_id: int) -> bool:
     """Trust everyone if the roster has no Telegram entries (initial
-    setup); otherwise the chat_id must appear as `tg:NNN` in
-    household.md."""
+    setup); otherwise:
+      - in DMs, the chat_id (== user's id) must be in the roster;
+      - in groups, either the *speaker's* user_id or the group's chat_id
+        must be in the roster. This lets you choose between (a) listing
+        each family member individually as `tg:<user_id>` (their DM id),
+        or (b) listing the whole group as `tg:<negative_group_id>`.
+    """
     tg_ids = roster.telegram_chat_ids()
     if not tg_ids:
-        # Roster has no Telegram members yet — open mode, trust everyone.
-        # (If the roster has only phone members, this also evaluates True;
-        # that's intentional — the host is opting Telegram in by adding a
-        # tg: entry.)
+        # Open mode for initial setup. (If the roster has only phone
+        # members, this also evaluates True — that's intentional; the
+        # host opts Telegram in by adding a `tg:` entry.)
         return True
-    return chat_id in tg_ids
+    if chat.type == "private":
+        return chat.id in tg_ids
+    # group / supergroup / channel
+    return user_id in tg_ids or chat.id in tg_ids
 
 
 def _unauthorized_message(name: str, chat_id: int) -> str:
@@ -55,6 +68,61 @@ def _unauthorized_message(name: str, chat_id: int) -> str:
         f"line to /memories/household.md:\n\n"
         f"- {name} (tg:{chat_id})"
     )
+
+
+def _bot_addressed(update, bot_username: str | None, bot_id: int | None) -> tuple[bool, str]:
+    """Decide whether a group-chat message is directed at Rosey, and
+    return the message text with the trigger stripped.
+
+    Returns (should_respond, cleaned_text).
+
+    DMs always respond and pass text through unchanged. In groups, we
+    respond when ANY of these hold:
+      1. The message is a reply to one of the bot's own messages.
+      2. The message contains an @-mention of the bot's username.
+      3. The message starts with "rosey" or "hey rosey" (case-insensitive),
+         followed by space/comma/colon — or is exactly that prefix.
+
+    Slash commands don't reach here (filtered upstream by ~filters.COMMAND).
+    """
+    chat = update.effective_chat
+    msg = update.message
+    text = (msg.text if msg else "") or ""
+    text = text.strip()
+
+    if chat.type == "private":
+        return True, text
+
+    # 1. Reply to one of the bot's messages.
+    reply_to = getattr(msg, "reply_to_message", None)
+    if (
+        reply_to is not None
+        and bot_id is not None
+        and reply_to.from_user is not None
+        and reply_to.from_user.id == bot_id
+    ):
+        return True, text
+
+    # 2. @-mention. Telegram preserves the literal "@username" in the text
+    # for `mention` entities, so a substring match is sufficient and avoids
+    # walking entity offsets.
+    if bot_username:
+        handle = f"@{bot_username}"
+        if re.search(re.escape(handle), text, flags=re.IGNORECASE):
+            cleaned = re.sub(re.escape(handle), "", text, flags=re.IGNORECASE)
+            cleaned = cleaned.strip(" ,:")
+            return True, cleaned or text
+
+    # 3. Name-prefix triggers.
+    lower = text.lower()
+    for prefix in _NAME_PREFIXES:
+        if lower == prefix:
+            return True, ""
+        if lower.startswith(prefix) and len(text) > len(prefix) and text[len(prefix)] in " ,:":
+            cleaned = text[len(prefix) :].lstrip(" ,:").strip()
+            return True, cleaned
+
+    return False, text
 
 
 # ---------------------------------------------------------------------------
