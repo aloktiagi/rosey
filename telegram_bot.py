@@ -25,14 +25,47 @@ import logging
 import os
 import re
 import sys
+from collections import defaultdict
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 import roster
+import scheduler as reminder_scheduler
 import transcribe  # voice → Whisper
 from agent import handle_message
+from paths import memories_dir
 
 log = logging.getLogger("rosey.telegram")
+
+# One asyncio.Lock per chat — prevents two concurrent messages in the same
+# chat from racing into the agent loop and double-spending the ITPM budget.
+# defaultdict gets us lazy creation; the dict grows by one entry per active
+# chat, which is fine for a household-scale deployment.
+_chat_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+# Path to the file we use to persist the last-processed Telegram update_id
+# so a crash + restart doesn't redeliver and re-process the same message.
+# Lives next to the memory directory rather than inside it (the agent's
+# memory tool doesn't need to see this).
+def _state_path() -> Path:
+    return memories_dir().parent / ".telegram_state"
+
+
+def _load_last_update_id() -> int:
+    try:
+        return int(_state_path().read_text(encoding="utf-8").strip())
+    except (FileNotFoundError, ValueError):
+        return 0
+
+
+def _save_last_update_id(uid: int) -> None:
+    try:
+        path = _state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(uid), encoding="utf-8")
+    except OSError:
+        log.exception("failed to persist last update_id")
 
 # Trigger words that count as "addressing Rosey" in a group chat. Matched
 # case-insensitively, must be the first word and followed by space/comma/colon
@@ -129,16 +162,38 @@ def _bot_addressed(update, bot_username: str | None, bot_id: int | None) -> tupl
 # Telegram handlers
 # ---------------------------------------------------------------------------
 
+def _is_group(chat) -> bool:
+    return chat.type in ("group", "supergroup")
+
+
+def _voice_addressed_in_group(msg, bot_id: int | None) -> bool:
+    """Voice messages in groups are only processed when they reply to one
+    of the bot's own messages — there's no audio @-mention to detect, and
+    transcribing-then-deciding would burn Whisper calls on every group
+    voice note. In DMs, all voice is processed (caller checks `_is_group`).
+    """
+    reply_to = getattr(msg, "reply_to_message", None)
+    return (
+        reply_to is not None
+        and bot_id is not None
+        and reply_to.from_user is not None
+        and reply_to.from_user.id == bot_id
+    )
+
+
 async def _on_start(update, context):
-    chat_id = update.effective_chat.id
-    name = update.effective_user.first_name or "there"
-    if _is_authorized(chat_id):
+    chat = update.effective_chat
+    user = update.effective_user
+    name = user.first_name or "there"
+    if _is_authorized(chat, user.id):
         await update.message.reply_text(
             f"Hi {name}! I'm Rosey — your household's shared memory. "
             "Try 'add bananas to the list' or 'remember the wifi password is goldfinch42'."
         )
-    else:
-        await update.message.reply_text(_unauthorized_message(name, chat_id))
+    elif not _is_group(chat):
+        # In DMs, give the standard onboarding message. In groups, just
+        # stay silent — replying to /start from a stranger would be noise.
+        await update.message.reply_text(_unauthorized_message(name, chat.id))
 
 
 async def _run_agent(sender_id: str, body: str) -> str:
@@ -147,23 +202,74 @@ async def _run_agent(sender_id: str, body: str) -> str:
     return await asyncio.to_thread(handle_message, sender_id, body)
 
 
+# Loaded at import; updated as messages are processed. Backstop against
+# Telegram redelivery on restart-after-crash. Save BEFORE processing so a
+# crash mid-agent-loop doesn't redeliver and re-execute (e.g. add milk twice).
+_last_update_id = _load_last_update_id()
+
+
+def _seen_or_advance(uid: int) -> bool:
+    """Return True if this update was already processed (skip), False if
+    new (and persist as latest). Monotonic: we only advance forward.
+    """
+    global _last_update_id
+    if uid <= _last_update_id:
+        return True
+    _last_update_id = uid
+    _save_last_update_id(uid)
+    return False
+
+
 async def _on_text(update, context):
-    chat_id = update.effective_chat.id
-    name = update.effective_user.first_name or ""
+    chat = update.effective_chat
+    user = update.effective_user
+    name = user.first_name or ""
     text = (update.message.text or "").strip()
     if not text:
         return
 
-    if not _is_authorized(chat_id):
-        await update.message.reply_text(_unauthorized_message(name, chat_id))
+    bot_username = getattr(context.bot, "username", None)
+    bot_id = getattr(context.bot, "id", None)
+
+    # Group: gate on explicit address. Strip the trigger so the agent
+    # sees "add milk" instead of "@rosey_bot add milk".
+    if _is_group(chat):
+        addressed, text = _bot_addressed(update, bot_username, bot_id)
+        if not addressed:
+            return  # ignore background chatter silently
+        if not text:
+            # Pure mention with no content — nudge the speaker.
+            await update.message.reply_text(
+                "Yes? Add what you need — e.g. 'rosey add milk to the list'."
+            )
+            return
+
+    if not _is_authorized(chat, user.id):
+        if _is_group(chat):
+            return  # silent in groups; onboarding only happens in DMs
+        await update.message.reply_text(_unauthorized_message(name, chat.id))
         return
 
-    log.info("inbound from=tg:%s len=%d", chat_id, len(text))
-    try:
-        reply = await _run_agent(f"tg:{chat_id}", text)
-    except Exception:
-        log.exception("agent failure for tg:%s", chat_id)
-        reply = "Something went wrong. Try again in a moment."
+    # Idempotency: skip if Telegram redelivered an update we already processed.
+    if _seen_or_advance(update.update_id):
+        log.info("skip already-seen update_id=%d", update.update_id)
+        return
+
+    # sender_id always identifies the human speaker, not the chat. In DMs
+    # chat.id == user.id; in groups they differ and we want the speaker.
+    sender_id = f"tg:{user.id}"
+    log.info("inbound from=%s chat=%s len=%d", sender_id, chat.id, len(text))
+
+    # Per-chat lock: if a prior message in this chat is still being
+    # processed, queue behind it instead of spawning a parallel agent
+    # loop. Prevents two agent loops in the same chat from doubling up
+    # on the API token-per-minute budget.
+    async with _chat_locks[chat.id]:
+        try:
+            reply = await _run_agent(sender_id, text)
+        except Exception:
+            log.exception("agent failure for %s", sender_id)
+            reply = "Something went wrong. Try again in a moment."
 
     if reply:
         await update.message.reply_text(reply)
@@ -171,11 +277,25 @@ async def _on_text(update, context):
 
 async def _on_voice(update, context):
     """Telegram voice notes (.oga / Opus) → Whisper → agent."""
-    chat_id = update.effective_chat.id
-    name = update.effective_user.first_name or ""
+    chat = update.effective_chat
+    user = update.effective_user
+    bot_id = getattr(context.bot, "id", None)
 
-    if not _is_authorized(chat_id):
-        await update.message.reply_text(_unauthorized_message(name, chat_id))
+    # Group: only process voice notes that reply to the bot. No audio
+    # @-mention detection without transcribing first, and we don't want
+    # to burn a Whisper call per group voice note.
+    if _is_group(chat) and not _voice_addressed_in_group(update.message, bot_id):
+        return
+
+    if not _is_authorized(chat, user.id):
+        if _is_group(chat):
+            return
+        name = user.first_name or ""
+        await update.message.reply_text(_unauthorized_message(name, chat.id))
+        return
+
+    if _seen_or_advance(update.update_id):
+        log.info("skip already-seen voice update_id=%d", update.update_id)
         return
 
     voice = update.message.voice or update.message.audio
@@ -192,7 +312,7 @@ async def _on_voice(update, context):
             transcribe.transcribe_audio, audio_bytes, "audio/ogg"
         )
     except Exception:
-        log.exception("transcription failed for tg:%s", chat_id)
+        log.exception("transcription failed for tg:%s", user.id)
         await update.message.reply_text(
             "I couldn't hear that — try again or send text."
         )
@@ -204,12 +324,15 @@ async def _on_voice(update, context):
         )
         return
 
-    log.info("inbound voice from=tg:%s transcript_len=%d", chat_id, len(transcript))
-    try:
-        reply = await _run_agent(f"tg:{chat_id}", transcript)
-    except Exception:
-        log.exception("agent failure for tg:%s (voice)", chat_id)
-        reply = "Something went wrong. Try again in a moment."
+    sender_id = f"tg:{user.id}"
+    log.info("inbound voice from=%s chat=%s transcript_len=%d",
+             sender_id, chat.id, len(transcript))
+    async with _chat_locks[chat.id]:
+        try:
+            reply = await _run_agent(sender_id, transcript)
+        except Exception:
+            log.exception("agent failure for %s (voice)", sender_id)
+            reply = "Something went wrong. Try again in a moment."
 
     if reply:
         await update.message.reply_text(reply)
@@ -248,6 +371,13 @@ def main() -> int:
     if not token:
         print("TELEGRAM_BOT_TOKEN is not set. Get one from @BotFather.", file=sys.stderr)
         return 1
+
+    # Start the persistent reminder scheduler before we begin polling.
+    # reconcile() loads any past-due jobs and (with misfire_grace_time)
+    # they fire immediately; future-due jobs sit in the SQLite jobstore
+    # until their DateTrigger time arrives.
+    reminder_scheduler.start()
+    reminder_scheduler.reconcile()
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", _on_start))

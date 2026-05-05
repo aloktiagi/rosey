@@ -10,6 +10,7 @@ dependencies = [
     "flask>=3.0",
     "python-dotenv>=1.0",
     "apscheduler>=3.10",
+    "sqlalchemy>=2.0",          # APScheduler's SQLAlchemyJobStore for persistence
     "tomli>=2.0; python_version < '3.11'",
     "gunicorn>=21.0",
     "requests>=2.31",
@@ -28,4 +29,4 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["memory_tool", "agent", "cli", "app", "summary", "household", "reminders", "telegram_bot", "transcribe", "channels", "paths", "reminder_format", "roster", "tools"]
+py-modules = ["memory_tool", "agent", "cli", "app", "summary", "household", "reminders", "telegram_bot", "transcribe", "channels", "paths", "reminder_format", "roster", "tools", "scheduler"]

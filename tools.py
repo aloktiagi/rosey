@@ -28,9 +28,15 @@ def default_tools(memory) -> List[dict]:
 
     `memory` is a `FileMemoryTool` (or compatible) instance. Its `.to_dict()`
     is what the API expects.
+
+    `max_uses` on the server-side tools caps how many times Claude can call
+    each within a single API turn. Without these caps, "find a plumber" can
+    snowball into 4–5 searches and several fetches, each adding 5–10s of
+    latency and a few KB of result tokens to the conversation. Two of each
+    is more than enough for the typical household question.
     """
     return [
         memory.to_dict(),
-        {"type": "web_search_20260209", "name": "web_search"},
-        {"type": "web_fetch_20260209", "name": "web_fetch"},
+        {"type": "web_search_20260209", "name": "web_search", "max_uses": 2},
+        {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 2},
     ]
