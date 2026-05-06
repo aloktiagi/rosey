@@ -197,6 +197,27 @@ async def _on_start(update, context):
         await update.message.reply_text(_unauthorized_message(name, chat.id))
 
 
+async def _on_status_command(update, context):
+    """`/status` — print a one-shot summary of pending/fired/missed reminders.
+    Read-only; doesn't go through the agent loop. Authorized users only.
+    """
+    chat = update.effective_chat
+    user = update.effective_user
+    if not _is_authorized(chat, user.id):
+        if not _is_group(chat):
+            name = user.first_name or ""
+            await update.message.reply_text(_unauthorized_message(name, chat.id))
+        return
+    summary = await asyncio.to_thread(reminder_scheduler.compute_status)
+    await update.message.reply_text(summary)
+
+
+# Match "status", "/status", or "what's the status" as the cleaned text after
+# stripping the trigger word in groups. Conservative — if the user wrote
+# more than just "status", route to the agent like any other request.
+_STATUS_INTENT_RE = re.compile(r"^/?status[?.!]?$", re.IGNORECASE)
+
+
 async def _run_agent(sender_id: str, body: str, origin_chat: str) -> str:
     # handle_message is synchronous and can block on Anthropic + memory I/O.
     # Run it off the event loop so the bot stays responsive.
@@ -305,6 +326,16 @@ async def _on_text(update, context):
         if _is_group(chat):
             return  # silent in groups; onboarding only happens in DMs
         await update.message.reply_text(_unauthorized_message(name, chat.id))
+        return
+
+    # STATUS FAST PATH. "rosey status" / "status" / "/status" returns a
+    # read-only summary without burning an agent turn. Cheap, deterministic,
+    # safe to use frequently for trust verification.
+    if _STATUS_INTENT_RE.match(text):
+        if _seen_or_advance(update.update_id):
+            return
+        summary = await asyncio.to_thread(reminder_scheduler.compute_status)
+        await update.message.reply_text(summary)
         return
 
     # Idempotency: skip if Telegram redelivered an update we already processed.
@@ -440,6 +471,7 @@ def main() -> int:
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", _on_start))
+    app.add_handler(CommandHandler("status", _on_status_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _on_text))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, _on_voice))
 

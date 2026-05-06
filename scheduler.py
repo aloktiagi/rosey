@@ -777,6 +777,84 @@ def reconcile() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Status — read-only summary of what's pending, fired, missed. Used by the
+# `/status` and "rosey status" admin command for at-a-glance verification.
+# ---------------------------------------------------------------------------
+
+def compute_status() -> str:
+    """Build a short, plain-text summary suitable for a Telegram reply.
+    Reads reminders.md only — no scheduler state, no API calls.
+    """
+    path = memories_dir() / "reminders.md"
+    if not path.exists():
+        return "No reminders file yet — nothing scheduled."
+
+    sections = _split_sections(path.read_text(encoding="utf-8"))
+    pending = [l for l in sections["head"].splitlines() if l.strip().startswith("- ")]
+    fired = [l for l in sections["fired"].splitlines() if l.strip().startswith("- ")]
+    missed = [l for l in sections["missed"].splitlines() if l.strip().startswith("- ")]
+    failed = [l for l in sections["failed"].splitlines() if l.strip().startswith("- ")]
+    malformed = [l for l in sections["malformed"].splitlines() if l.strip().startswith("- ")]
+
+    # Find the next-due pending reminder (smallest timestamp).
+    next_due_ts: str | None = None
+    next_due_msg: str | None = None
+    for line in pending:
+        m = LINE_RE.match(line)
+        if not m:
+            continue
+        ts = m.group(1).replace("T", " ")
+        if next_due_ts is None or ts < next_due_ts:
+            next_due_ts = ts
+            next_due_msg = _strip_to_user_message(m.group(2))
+
+    # Categorize the ## Fired section's lines by current state. Lines may
+    # have multiple annotations; we look at terminal state.
+    acked_count = 0
+    pending_ack_count = 0  # fired but not yet acked, escalation may be in flight
+    for line in fired:
+        if ACKED_RE.search(line):
+            acked_count += 1
+        else:
+            pending_ack_count += 1
+
+    parts: list[str] = []
+    if pending:
+        if next_due_ts and next_due_msg:
+            parts.append(
+                f"📅 {len(pending)} pending. Next: \"{next_due_msg}\" at {next_due_ts}."
+            )
+        else:
+            parts.append(f"📅 {len(pending)} pending.")
+    else:
+        parts.append("📅 0 pending.")
+
+    if fired:
+        chunks = [f"{len(fired)} fired"]
+        if acked_count:
+            chunks.append(f"{acked_count} acked")
+        if pending_ack_count:
+            chunks.append(f"{pending_ack_count} awaiting ack")
+        parts.append("✅ " + ", ".join(chunks) + ".")
+
+    if missed:
+        parts.append(f"⚠️ {len(missed)} missed.")
+    if failed:
+        parts.append(f"❌ {len(failed)} undeliverable (in `## Failed_Delivery`).")
+    if malformed:
+        parts.append(f"❓ {len(malformed)} malformed (in `## Malformed`).")
+
+    # Mention scheduler health in one line.
+    try:
+        n_jobs = len(start().get_jobs())
+        parts.append(f"🕒 Scheduler: {n_jobs} jobs registered.")
+    except Exception:
+        parts.append("🕒 Scheduler: unavailable.")
+
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # Compatibility shim — old jobstore entries from before the lifecycle rewrite
 # referenced this function. They get cleaned up on first reconcile (see
 # orphan removal above), but keep the symbol importable so APScheduler can
