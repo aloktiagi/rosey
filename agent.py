@@ -49,9 +49,38 @@ exact date and time when tagging entries and interpreting relative phrases
 like "in 5 minutes", "tomorrow morning", "tonight", "this evening". Do not
 guess or use any other date or time.
 
+CRITICAL date rules for reminders:
+
+(1) Every timestamp you write to /memories/reminders.md MUST be strictly
+in the future relative to the current time above. If the user says a clock
+time that has already passed today (e.g. it's 11:18 PM and they say "remind
+me at 12:45"), roll forward to the next occurrence — almost always tomorrow
+at that time. Never write a past timestamp — it'll fire immediately and
+look broken.
+
+(2) When the user gives a clear time ("at 9am", "next Friday", "tomorrow
+morning", "in 2 hours"), use it. When the time is implicit but obvious from
+context ("before our trip on Saturday" → that Saturday morning; "before the
+appointment Thursday" → Wednesday evening), infer it.
+
+(3) When NO time is given and none can reasonably be inferred (e.g.
+"remind ankit to schedule his annual physical", "nudge sunanda about the
+registration", "remind me to look into car insurance"), DO NOT pick a
+default. Don't write the reminder line yet. Instead, ask ONE concrete
+clarifying question and wait for the answer. Examples:
+
+  "Sure — when do you want me to nudge ankit about that?"
+  "By when does this need to happen?"
+  "Should I remind in a few days, next week, or by a specific date?"
+
+Picking "tomorrow" or any arbitrary default is wrong — it invents urgency
+the user didn't ask for. Asking is the correct behavior, not a failure.
+
 The sender's identifier is {from_phone} (e.g. `tg:<chat_id>` for Telegram).
-Cross-reference with /memories/household.md to identify them by name. If
-household.md doesn't exist or doesn't list this identifier, mention that
+The chat this message arrived in is {origin_chat} — same as the sender for
+DMs, different (and usually negative) for group chats. Cross-reference
+{from_phone} with /memories/household.md to identify the speaker by name.
+If household.md doesn't exist or doesn't list this identifier, mention that
 in your reply.
 
 Your memory directory at /memories is the household's durable state.
@@ -109,6 +138,25 @@ something ("got the milk", "called the plumber", "paid comcast"), record
 it in the relevant history file under today's date and remove it from any
 pending-list file.
 
+Acknowledging reminders: if a user reports completing something that has
+a matching line in /memories/reminders.md (whether currently pending in
+head or already in ## Fired), DO NOT delete or remove the line. Instead,
+use str_replace to append ` (acked by <Name> at <YYYY-MM-DD HH:MM>)` to
+the END of that line, where <Name> is the speaker's first name from
+household.md and the timestamp is the current local time. Example:
+
+  Before:
+    - [2026-05-05 12:45] baby feed @Sunanda from:tg:-5293147837 id:abc123 (fired at 2026-05-05 12:45 chat:tg:8637 msg:1234)
+
+  After str_replace appending:
+    - [2026-05-05 12:45] baby feed @Sunanda from:tg:-5293147837 id:abc123 (fired at 2026-05-05 12:45 chat:tg:8637 msg:1234) (acked by Sunanda at 2026-05-05 12:48)
+
+The scheduler watches for the `(acked` annotation and self-skips any
+pending escalation/missed-marking jobs. Append-only is critical — the
+file is the audit trail. Never delete lines from reminders.md; let them
+accumulate in their state-tracking sections. Confirm to the user briefly
+("got it, marked done") and move on.
+
 Reminders: when someone asks you to remind them about something at a
 specific time ("remind me Friday at 9am to take out the trash", "nudge
 Sam tomorrow morning to call the dentist"), append a line to
@@ -117,14 +165,43 @@ Sam tomorrow morning to call the dentist"), append a line to
   {reminder_format}
 
 Use 24-hour time. Times are in the household's local timezone — assume
-that automatically; don't include a timezone suffix. Names after @ must
-match the names listed in household.md exactly (case-insensitive). If
-the request doesn't name anyone specific, omit the @ mentions and
-everyone in the household will be reminded.
+that automatically; don't include a timezone suffix. The timestamp MUST
+be strictly in the future (see the CRITICAL date rule above).
 
-A separate process checks /memories/reminders.md every minute and
-messages the named people at the right time. Don't try to send the
-reminder yourself — just write the line and confirm to the user.
+Names after @ must match the names listed in household.md exactly
+(case-insensitive). If the request doesn't name anyone specific, omit the
+@ mentions and everyone in the household will be reminded.
+
+ALWAYS end the line with `from:{origin_chat}` — this is the chat where
+the reminder was created. The scheduler uses it as a fallback recipient
+if the @-named people can't be resolved (e.g. household.md is empty or
+the name isn't listed). Without this tag, a reminder with unresolvable
+mentions silently fails to deliver. Use the literal value above, including
+the `tg:` prefix.
+
+Optionally, append `esc:Nm`/`esc:Nh`/`esc:Nd` and/or `miss:Nh`/`miss:Nd`
+to control the escalation cadence:
+- `esc:` is when, if no acknowledgement, the reminder also fires to the
+  full originating chat (default: 30 minutes after primary fire).
+- `miss:` is when the reminder is given up on and marked missed (default:
+  24 hours after primary fire).
+
+Use these overrides when the cadence really matters:
+- Time-critical with consequences: `esc:5m miss:1h` — pediatrician arrival,
+  daycare pickup, medication reminder.
+- Slow-burn / open-ended: `esc:1d miss:7d` — schedule annual physical,
+  call vendor for quote, mid-month bill check.
+- For most things, omit both — the defaults are reasonable.
+
+Concrete examples (current chat = {origin_chat}):
+
+  - [2026-05-06 12:45] baby feed time @Ankit @Sunanda from:{origin_chat}
+  - [2026-05-08 17:00] pick up baby from daycare @Ankit from:{origin_chat} esc:5m miss:1h
+  - [2026-05-13 09:00] schedule annual physical @Ankit from:{origin_chat} esc:1d miss:7d
+
+A separate process schedules each line as a one-shot job at the exact
+minute, with escalation and miss jobs registered alongside. Don't try to
+send the reminder yourself — just write the line and confirm to the user.
 
 Reply guidance:
 - Be concise. Telegram replies should usually fit under 200 characters.
@@ -303,18 +380,32 @@ def handle_message(
     memory_root: str | None = None,
     *,
     is_system: bool = False,
+    origin_chat: str | None = None,
 ) -> str:
     """Run one turn through Claude with memory + web tools. Returns plain-text reply.
 
     Set is_system=True for scheduled/automated invocations: skips per-sender
     thread state and uses a different framing prompt that omits the "you have
     a human user" framing.
+
+    `origin_chat` is the channel-tagged identifier of the chat this message
+    arrived in (e.g. "tg:-5293147837" for a Telegram group). For DMs this
+    matches `from_phone`. The agent embeds this into reminder lines as a
+    `from:` tag so the scheduler can fall back to messaging the originating
+    chat if @-named recipients don't resolve in the roster.
     """
     base = _resolve_base(memory_root)
     memory = FileMemoryTool(base_path=base)
     now_local, tz_name = _local_clock()
     today = now_local.split(" ", 1)[0]  # YYYY-MM-DD prefix
     memory_index = _build_memory_index(base)
+
+    # If origin_chat wasn't passed (e.g. legacy callers, summary.py), default
+    # to the speaker's identifier — DMs are self-originating, and a missing
+    # tag in a group context just means the smart-fallback degrades to the
+    # existing behavior (mention resolution → all_idents → quarantine).
+    if origin_chat is None:
+        origin_chat = from_phone
 
     if is_system:
         thread_path = None
@@ -332,6 +423,7 @@ def handle_message(
             user_content = f"<recent_thread>\n{thread_tail}\n</recent_thread>\n\n{body}"
         system_prompt = SYSTEM_PROMPT.format(
             from_phone=from_phone,
+            origin_chat=origin_chat,
             now_local=now_local,
             tz_name=tz_name,
             reminder_format=REMINDER_FORMAT,

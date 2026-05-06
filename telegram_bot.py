@@ -30,6 +30,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+import gate
 import roster
 import scheduler as reminder_scheduler
 import transcribe  # voice → Whisper
@@ -196,10 +197,15 @@ async def _on_start(update, context):
         await update.message.reply_text(_unauthorized_message(name, chat.id))
 
 
-async def _run_agent(sender_id: str, body: str) -> str:
+async def _run_agent(sender_id: str, body: str, origin_chat: str) -> str:
     # handle_message is synchronous and can block on Anthropic + memory I/O.
     # Run it off the event loop so the bot stays responsive.
-    return await asyncio.to_thread(handle_message, sender_id, body)
+    # `origin_chat` is "tg:<chat_id>" of the chat this message arrived in
+    # (a group's negative id, or the user's own id for DMs). The agent
+    # bakes it into reminder lines so the scheduler has a fallback target.
+    return await asyncio.to_thread(
+        handle_message, sender_id, body, origin_chat=origin_chat
+    )
 
 
 # Loaded at import; updated as messages are processed. Backstop against
@@ -220,6 +226,16 @@ def _seen_or_advance(uid: int) -> bool:
     return False
 
 
+def _is_reply_to_bot(msg, bot_id: int | None) -> bool:
+    reply_to = getattr(msg, "reply_to_message", None)
+    return (
+        reply_to is not None
+        and bot_id is not None
+        and reply_to.from_user is not None
+        and reply_to.from_user.id == bot_id
+    )
+
+
 async def _on_text(update, context):
     chat = update.effective_chat
     user = update.effective_user
@@ -231,12 +247,53 @@ async def _on_text(update, context):
     bot_username = getattr(context.bot, "username", None)
     bot_id = getattr(context.bot, "id", None)
 
-    # Group: gate on explicit address. Strip the trigger so the agent
-    # sees "add milk" instead of "@rosey_bot add milk".
+    # ACK FAST PATH. If this is a reply to one of the bot's own messages
+    # AND that message was the fire of a known reminder, treat it as an
+    # acknowledgement — don't run the agent loop. The user's text content
+    # is effectively discarded; the action is "acked." If they want to
+    # also issue a follow-up instruction, they can send a separate message.
+    if _is_reply_to_bot(update.message, bot_id):
+        replied_msg_id = update.message.reply_to_message.message_id
+        task_id = await asyncio.to_thread(
+            reminder_scheduler.find_task_by_chat_msg,
+            f"tg:{chat.id}",
+            replied_msg_id,
+        )
+        if task_id is not None:
+            if not _is_authorized(chat, user.id):
+                # Unauthorized → silent in groups, polite in DMs.
+                if not _is_group(chat):
+                    await update.message.reply_text(_unauthorized_message(name, chat.id))
+                return
+            if _seen_or_advance(update.update_id):
+                return
+            ok = await asyncio.to_thread(
+                reminder_scheduler.mark_acked, task_id, name or f"tg:{user.id}",
+            )
+            if ok:
+                log.info("ack via reply-to-bot from=tg:%s task=%s", user.id, task_id)
+                await update.message.reply_text("✓ Got it.")
+            else:
+                log.warning("ack from=tg:%s task=%s — line not found", user.id, task_id)
+            return
+        # Not a reminder reply — fall through to the normal trigger path.
+
+    # Group: gate on explicit address first. If that fails, optionally
+    # ask a cheap Haiku classifier whether this message looks like
+    # something Rosey should handle ("we need milk", "what's the
+    # pediatrician's number", etc.) — for the household-assistant
+    # use case where users won't always remember to @-mention.
     if _is_group(chat):
         addressed, text = _bot_addressed(update, bot_username, bot_id)
         if not addressed:
-            return  # ignore background chatter silently
+            if not gate.fuzzy_enabled():
+                return  # strict mode: ignore background chatter silently
+            # Run classifier off the event loop so we stay responsive.
+            should = await asyncio.to_thread(gate.should_respond_in_group, text)
+            if not should:
+                return  # classifier voted NO, stay silent
+            # Classifier voted YES — fall through with the original text
+            # untouched (no trigger word to strip).
         if not text:
             # Pure mention with no content — nudge the speaker.
             await update.message.reply_text(
@@ -260,13 +317,14 @@ async def _on_text(update, context):
     sender_id = f"tg:{user.id}"
     log.info("inbound from=%s chat=%s len=%d", sender_id, chat.id, len(text))
 
+    origin_chat = f"tg:{chat.id}"
     # Per-chat lock: if a prior message in this chat is still being
     # processed, queue behind it instead of spawning a parallel agent
     # loop. Prevents two agent loops in the same chat from doubling up
     # on the API token-per-minute budget.
     async with _chat_locks[chat.id]:
         try:
-            reply = await _run_agent(sender_id, text)
+            reply = await _run_agent(sender_id, text, origin_chat)
         except Exception:
             log.exception("agent failure for %s", sender_id)
             reply = "Something went wrong. Try again in a moment."
@@ -325,11 +383,12 @@ async def _on_voice(update, context):
         return
 
     sender_id = f"tg:{user.id}"
+    origin_chat = f"tg:{chat.id}"
     log.info("inbound voice from=%s chat=%s transcript_len=%d",
              sender_id, chat.id, len(transcript))
     async with _chat_locks[chat.id]:
         try:
-            reply = await _run_agent(sender_id, transcript)
+            reply = await _run_agent(sender_id, transcript, origin_chat)
         except Exception:
             log.exception("agent failure for %s (voice)", sender_id)
             reply = "Something went wrong. Try again in a moment."
