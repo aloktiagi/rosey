@@ -268,6 +268,24 @@ async def _on_text(update, context):
     bot_username = getattr(context.bot, "username", None)
     bot_id = getattr(context.bot, "id", None)
 
+    # STATUS FAST PATH. Bare "status" / "status?" / "/status" works in
+    # any chat without a "rosey" prefix or @-mention. The intent regex is
+    # tight enough (whole-message match only) that it won't false-fire on
+    # phrases like "what's the status of …". Auth-checked but otherwise
+    # cheap and trust-building, so we let it bypass the group trigger gate.
+    # (We still re-check after the trigger gate for "rosey status" → text
+    # "status" — same path, different entry point.)
+    if _STATUS_INTENT_RE.match(text):
+        if not _is_authorized(chat, user.id):
+            if not _is_group(chat):
+                await update.message.reply_text(_unauthorized_message(name, chat.id))
+            return
+        if _seen_or_advance(update.update_id):
+            return
+        summary = await asyncio.to_thread(reminder_scheduler.compute_status)
+        await update.message.reply_text(summary)
+        return
+
     # ACK FAST PATH. If this is a reply to one of the bot's own messages
     # AND that message was the fire of a known reminder, treat it as an
     # acknowledgement — don't run the agent loop. The user's text content
@@ -478,12 +496,25 @@ def main() -> int:
     webhook_url = os.environ.get("TELEGRAM_WEBHOOK_URL")
     if webhook_url:
         port = int(os.environ.get("PORT", "8080"))
-        log.info("starting webhook on :%d → %s", port, webhook_url)
+        # If TELEGRAM_WEBHOOK_SECRET is set, Telegram signs every webhook
+        # POST with the X-Telegram-Bot-Api-Secret-Token header and python-
+        # telegram-bot rejects requests without a matching value. Without
+        # this, anyone who guesses the public URL can spoof updates. Strongly
+        # recommended for any internet-reachable deployment.
+        secret_token = os.environ.get("TELEGRAM_WEBHOOK_SECRET")
+        if not secret_token:
+            log.warning(
+                "TELEGRAM_WEBHOOK_SECRET unset — webhook is unauthenticated. "
+                "Set it to a random string and re-deploy for production."
+            )
+        log.info("starting webhook on :%d → %s (auth=%s)",
+                 port, webhook_url, "on" if secret_token else "OFF")
         app.run_webhook(
             listen="0.0.0.0",
             port=port,
             url_path="telegram",
             webhook_url=webhook_url.rstrip("/") + "/telegram",
+            secret_token=secret_token,
         )
     else:
         log.info("starting Telegram polling — Ctrl-C to quit")

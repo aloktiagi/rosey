@@ -9,6 +9,7 @@ dependencies = [
     "anthropic>=0.80",
     "flask>=3.0",
     "python-dotenv>=1.0",
+    "python-telegram-bot[webhooks]>=21.0",
     "apscheduler>=3.10",
     "sqlalchemy>=2.0",          # APScheduler's SQLAlchemyJobStore for persistence
     "tomli>=2.0; python_version < '3.11'",
@@ -17,7 +18,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-telegram = ["python-telegram-bot>=21.0"]
+# `[webhooks]` pulls in tornado, needed when TELEGRAM_WEBHOOK_URL is set
+# (i.e. cloud deploys). Polling mode doesn't need it but it's small and
+# always-installing keeps the deployed image identical to the local one.
+telegram = []
 
 [project.urls]
 Homepage = "https://github.com/aloktiagi/rosey"
