@@ -36,6 +36,7 @@ Public API:
 from __future__ import annotations
 
 import hashlib
+import html
 import logging
 import os
 import re
@@ -145,6 +146,41 @@ def _strip_to_user_message(message: str) -> str:
     # Strip parenthetical lifecycle annotations: (fired ...), (acked ...) etc.
     s = re.sub(r"\([^)]*\)", "", s)
     return " ".join(s.split())
+
+
+def _format_assignee_html(assignees) -> str:
+    """Render `assignees` as space-joined Telegram HTML mentions.
+
+    Accepts either:
+      - list of (name, tg_chat_id_str | None) tuples (new format)
+      - list of plain name strings (legacy format from older job entries)
+
+    For known chat_ids, emits `<a href="tg://user?id=NNN">Name</a>`,
+    which renders as a clickable mention AND fires a notification ping
+    for that user (works even without a public @username, as long as
+    the user has shared a chat with the bot).
+
+    For unknown chat_ids (None or absent), falls back to plain `@Name`
+    text — visible attribution but no notification ping.
+
+    Names and IDs are HTML-escaped defensively to keep odd characters
+    from breaking Telegram's HTML parser.
+    """
+    parts: list[str] = []
+    for entry in assignees or []:
+        if isinstance(entry, str):
+            name, chat_id = entry, None
+        else:
+            name = entry[0] if len(entry) > 0 else ""
+            chat_id = entry[1] if len(entry) > 1 else None
+        if not name:
+            continue
+        safe_name = html.escape(name)
+        if chat_id and str(chat_id).lstrip("-").isdigit():
+            parts.append(f'<a href="tg://user?id={int(chat_id)}">{safe_name}</a>')
+        else:
+            parts.append(f"@{safe_name}")
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -336,20 +372,32 @@ def fire_one(
     raw_message: str,
     recipients: list[str],
     origin_chat: str,
+    assignee_names: list[str] | None = None,
 ) -> None:
     """Primary fire: send to recipients, capture msg_ids, move line from
     head to ## Fired with annotation.
+
+    `assignee_names` is the list of @-named people on the line (e.g.
+    ["Ankit", "Sunanda"]), included in the message body for attribution.
+    When the reminder fans out to a group chat (via the from: fallback),
+    this is what tells everyone who's responsible. Backwards-compatible
+    default of None keeps older jobstore entries firing without crashing
+    on the missing kwarg.
     """
     if not recipients:
         log.warning("fire_one task=%s: no recipients, noop", task_id)
         return
 
-    body_text = _strip_to_user_message(raw_message)
-    body = f"⏰ Reminder: {body_text}"
+    body_text = html.escape(_strip_to_user_message(raw_message))
+    mention_html = _format_assignee_html(assignee_names)
+    if mention_html:
+        body = f"⏰ Reminder for {mention_html}: {body_text}"
+    else:
+        body = f"⏰ Reminder: {body_text}"
 
     sent_pairs: list[tuple[str, int]] = []
     for ident in recipients:
-        msg_id = channels.send_returning_msg_id(ident, body)
+        msg_id = channels.send_returning_msg_id(ident, body, parse_mode="HTML")
         if msg_id is not None:
             sent_pairs.append((ident, msg_id))
 
@@ -369,6 +417,7 @@ def escalate_one(
     ts_str: str,
     raw_message: str,
     origin_chat: str,
+    assignee_names: list[str] | None = None,
 ) -> None:
     """If the task hasn't been acked yet, escalate to the originating
     chat (group). Self-skip if already acked or already escalated.
@@ -385,10 +434,14 @@ def escalate_one(
         log.info("escalate_one task=%s: already escalated, noop", task_id)
         return
 
-    body_text = _strip_to_user_message(raw_message)
-    body = f"⏰ Reminder (re-ping, no ack yet): {body_text}"
+    body_text = html.escape(_strip_to_user_message(raw_message))
+    mention_html = _format_assignee_html(assignee_names)
+    if mention_html:
+        body = f"⏰ Reminder for {mention_html} (re-ping, no ack yet): {body_text}"
+    else:
+        body = f"⏰ Reminder (re-ping, no ack yet): {body_text}"
 
-    msg_id = channels.send_returning_msg_id(origin_chat, body)
+    msg_id = channels.send_returning_msg_id(origin_chat, body, parse_mode="HTML")
     if msg_id is None:
         log.warning("escalate_one task=%s: send to %s failed", task_id, origin_chat)
         return
@@ -403,6 +456,7 @@ def miss_one(
     ts_str: str,
     raw_message: str,
     origin_chat: str,
+    assignee_names: list[str] | None = None,
 ) -> None:
     """If still un-acked at the miss horizon, move to ## Missed and notify."""
     state = _read_task_state(task_id)
@@ -411,9 +465,13 @@ def miss_one(
     if state["acked"] or state["missed"]:
         return
 
-    body_text = _strip_to_user_message(raw_message)
-    body = f"⚠️ Missed reminder (no acknowledgement): {body_text}"
-    channels.send_returning_msg_id(origin_chat, body)
+    body_text = html.escape(_strip_to_user_message(raw_message))
+    mention_html = _format_assignee_html(assignee_names)
+    if mention_html:
+        body = f"⚠️ Missed reminder for {mention_html} (no acknowledgement): {body_text}"
+    else:
+        body = f"⚠️ Missed reminder (no acknowledgement): {body_text}"
+    channels.send_returning_msg_id(origin_chat, body, parse_mode="HTML")
 
     log.info("miss_one task=%s — moved to ## Missed", task_id)
     annotation = f"(missed at {_now_str()} — no ack)"
@@ -610,14 +668,36 @@ def reconcile() -> None:
         })
 
     # Recipient cascade + per-line escalation cadences.
-    members_by_name = {m.name.lower(): m.identifier for m in roster.members()}
+    # Preserve canonical-cased names for display in the message body
+    # (the agent + parser store original casing; we lowercase only for
+    # lookup).
+    member_objs = roster.members()
+    members_by_name = {m.name.lower(): m.identifier for m in member_objs}
+    canonical_name = {m.name.lower(): m.name for m in member_objs}
     all_idents = list(members_by_name.values())
     failed_to_deliver: list[tuple[str, str, str]] = []
 
     desired_jobs: dict[str, dict] = {}
     for p in pending:
         msg = p["raw_message"]
-        mentions = [n.lower() for n in MENTION_RE.findall(msg)]
+        # Build the assignee list as (canonical_name, tg_chat_id) tuples.
+        # canonical_name comes from household.md when the @-mention resolves
+        # (so casing is consistent), or the raw user-typed name otherwise.
+        # tg_chat_id is the numeric Telegram id (extracted from "tg:NNN")
+        # for known members, or None for un-rostered names. The chat_id is
+        # what lets us emit `<a href="tg://user?id=NNN">Name</a>` mention
+        # links so Telegram pings the user with a notification.
+        raw_mentions = MENTION_RE.findall(msg)
+        mentions = [n.lower() for n in raw_mentions]
+        assignees: list[tuple[str, str | None]] = []
+        for raw_n in raw_mentions:
+            lower = raw_n.lower()
+            display_name = canonical_name.get(lower, raw_n)
+            ident = members_by_name.get(lower)
+            chat_id_str: str | None = None
+            if ident and ident.startswith("tg:"):
+                chat_id_str = ident[len("tg:"):]
+            assignees.append((display_name, chat_id_str))
         from_chats = FROM_RE.findall(msg)
 
         if mentions:
@@ -671,6 +751,7 @@ def reconcile() -> None:
             "origin_chat": origin_chat,
             "esc_delta": esc_delta,
             "miss_delta": miss_delta,
+            "assignees": assignees,
         }
 
     # Remove failed-to-deliver lines from head so the rewrite drops them.
@@ -707,25 +788,28 @@ def reconcile() -> None:
         miss_id = f"miss:{tid}"
         desired_job_ids.update({fire_id, esc_id, miss_id})
 
+        assignees = info.get("assignees") or []
         sched.add_job(
             fire_one,
             trigger=DateTrigger(run_date=due),
             args=[tid, info["ts_str"], info["raw_message"],
-                  info["recipients"], info["origin_chat"]],
+                  info["recipients"], info["origin_chat"], assignees],
             id=fire_id,
             replace_existing=True,
         )
         sched.add_job(
             escalate_one,
             trigger=DateTrigger(run_date=due + info["esc_delta"]),
-            args=[tid, info["ts_str"], info["raw_message"], info["origin_chat"]],
+            args=[tid, info["ts_str"], info["raw_message"],
+                  info["origin_chat"], assignees],
             id=esc_id,
             replace_existing=True,
         )
         sched.add_job(
             miss_one,
             trigger=DateTrigger(run_date=due + info["miss_delta"]),
-            args=[tid, info["ts_str"], info["raw_message"], info["origin_chat"]],
+            args=[tid, info["ts_str"], info["raw_message"],
+                  info["origin_chat"], assignees],
             id=miss_id,
             replace_existing=True,
         )
