@@ -8,6 +8,7 @@ Identifier scheme: `tg:NNN` where NNN is the Telegram chat_id.
 """
 from __future__ import annotations
 
+import base64
 import hmac
 import json as json_mod
 import logging
@@ -143,18 +144,53 @@ def _validate_telegram_secret() -> None:
 
 def _telegram_extract(update: dict) -> tuple:
     """Parse the bits of a Telegram update we care about. Returns
-    (chat_id, text, first_name) or (None, None, None) for irrelevant
-    update types (callbacks, edits, channel posts, voice notes, etc.).
+    (chat_id, text, first_name, photo_file_id) — photo_file_id is the
+    largest variant's file_id when the message has a photo, else None.
+    Returns (None, None, None, None) for irrelevant update types.
     """
     msg = update.get("message") or update.get("edited_message")
     if not msg:
-        return None, None, None
+        return None, None, None, None
     chat = msg.get("chat") or {}
     chat_id = chat.get("id")
     text = (msg.get("text") or msg.get("caption") or "").strip()
     sender = msg.get("from") or {}
     first_name = sender.get("first_name") or ""
-    return chat_id, text, first_name
+    # Telegram photos arrive as an array of size variants; the last one is
+    # the largest. We forward only the largest to the household VM.
+    photo = msg.get("photo") or []
+    photo_file_id = photo[-1]["file_id"] if photo else None
+    return chat_id, text, first_name, photo_file_id
+
+
+def _download_telegram_photo(file_id: str) -> tuple:
+    """Resolve a Telegram file_id → (bytes, mime). Returns (None, None) on
+    failure. Telegram serves photos as JPEG.
+    """
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        log.warning("TELEGRAM_BOT_TOKEN missing — cannot download photo")
+        return None, None
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{token}/getFile",
+            json={"file_id": file_id},
+            timeout=10,
+        )
+        r.raise_for_status()
+        file_path = r.json().get("result", {}).get("file_path")
+        if not file_path:
+            log.warning("getFile returned no file_path")
+            return None, None
+        r = requests.get(
+            f"https://api.telegram.org/file/bot{token}/{file_path}",
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.content, "image/jpeg"
+    except Exception:
+        log.exception("photo download failed for file_id=%s", file_id)
+        return None, None
 
 
 @app.post("/telegram")
@@ -162,15 +198,18 @@ def telegram_webhook() -> Response:
     _validate_telegram_secret()
 
     update = request.get_json(silent=True) or {}
-    chat_id, text, first_name = _telegram_extract(update)
+    chat_id, text, first_name, photo_file_id = _telegram_extract(update)
     if chat_id is None:
         return Response("", status=200)
-    if not text:
-        # Voice notes / photos — TODO. Ack so Telegram doesn't retry.
+    if not text and not photo_file_id:
+        # Voice notes, stickers, etc. Ack so Telegram doesn't retry.
         return Response("", status=200)
 
     sender_id = f"tg:{chat_id}"
-    log.info("telegram inbound from=%s len=%d", sender_id, len(text))
+    log.info(
+        "telegram inbound from=%s len=%d photo=%s",
+        sender_id, len(text), "yes" if photo_file_id else "no",
+    )
 
     member = db.lookup_household(engine, sender_id)
     if member:
@@ -193,8 +232,8 @@ def telegram_webhook() -> Response:
             )
             return Response("", status=200)
 
-        # /feedback intercept
-        if _is_feedback(text):
+        # /feedback intercept (text-only)
+        if text and _is_feedback(text):
             note = _strip_feedback_prefix(text)
             if not note:
                 _send_telegram_message(
@@ -209,10 +248,16 @@ def telegram_webhook() -> Response:
             _send_telegram_message(chat_id, "Got it — passed your message along. 🙏")
             return Response("", status=200)
 
-        # Forward to household VM
+        # Forward to household VM (with photo if present)
+        payload = {"chat_id": chat_id, "text": text, "name": first_name}
+        if photo_file_id:
+            img_bytes, img_mime = _download_telegram_photo(photo_file_id)
+            if img_bytes:
+                payload["image_b64"] = base64.b64encode(img_bytes).decode("ascii")
+                payload["image_mime"] = img_mime
         threading.Thread(
             target=_forward_to_household_telegram,
-            args=(member["fly_app_name"], {"chat_id": chat_id, "text": text, "name": first_name}),
+            args=(member["fly_app_name"], payload),
             daemon=True,
         ).start()
         return Response("", status=200)

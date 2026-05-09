@@ -20,6 +20,7 @@ the host then pastes it into household.md and reloads the bot.
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import logging
 import os
@@ -73,10 +74,18 @@ async def _on_start(update, context):
         await update.message.reply_text(_unauthorized_message(name, chat_id))
 
 
-async def _run_agent(sender_id: str, body: str) -> str:
+async def _run_agent(
+    sender_id: str,
+    body: str,
+    image_b64: str | None = None,
+    image_mime: str | None = None,
+) -> str:
     # handle_message is synchronous and can block on Anthropic + memory I/O.
     # Run it off the event loop so the bot stays responsive.
-    return await asyncio.to_thread(handle_message, sender_id, body)
+    return await asyncio.to_thread(
+        handle_message, sender_id, body,
+        image_b64=image_b64, image_mime=image_mime,
+    )
 
 
 async def _on_text(update, context):
@@ -95,6 +104,49 @@ async def _on_text(update, context):
         reply = await _run_agent(f"tg:{chat_id}", text)
     except Exception:
         log.exception("agent failure for tg:%s", chat_id)
+        reply = "Something went wrong. Try again in a moment."
+
+    if reply:
+        await update.message.reply_text(reply)
+
+
+async def _on_photo(update, context):
+    """Telegram photos → multimodal agent turn."""
+    chat_id = update.effective_chat.id
+    name = update.effective_user.first_name or ""
+
+    if not _is_authorized(chat_id):
+        await update.message.reply_text(_unauthorized_message(name, chat_id))
+        return
+
+    photos = update.message.photo or []
+    if not photos:
+        return
+    largest = photos[-1]  # progressively-bigger thumbnails; last = full size
+    caption = (update.message.caption or "").strip()
+
+    try:
+        tg_file = await context.bot.get_file(largest.file_id)
+        buf = io.BytesIO()
+        await tg_file.download_to_memory(out=buf)
+        image_bytes = buf.getvalue()
+    except Exception:
+        log.exception("photo download failed for tg:%s", chat_id)
+        await update.message.reply_text("I couldn't grab that photo — try again?")
+        return
+
+    image_b64 = base64.b64encode(image_bytes).decode("ascii")
+    log.info(
+        "inbound photo from=tg:%s bytes=%d caption_len=%d",
+        chat_id, len(image_bytes), len(caption),
+    )
+    try:
+        reply = await _run_agent(
+            f"tg:{chat_id}", caption,
+            image_b64=image_b64, image_mime="image/jpeg",
+        )
+    except Exception:
+        log.exception("agent failure for tg:%s (photo)", chat_id)
         reply = "Something went wrong. Try again in a moment."
 
     if reply:
@@ -184,6 +236,7 @@ def main() -> int:
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", _on_start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _on_text))
+    app.add_handler(MessageHandler(filters.PHOTO, _on_photo))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, _on_voice))
 
     webhook_url = os.environ.get("TELEGRAM_WEBHOOK_URL")
