@@ -668,26 +668,13 @@ def reconcile() -> None:
         })
 
     # Recipient cascade + per-line escalation cadences.
-    # A single person can have multiple identifiers (e.g. tg + wa) — we
-    # fan out @Name mentions to ALL of their identifiers so reminders
-    # arrive on whichever channel the person is currently on.
-    # canonical_name preserves the original casing for display in the
-    # reminder body; lookup is lowercased.
+    # Preserve canonical-cased names for display in the message body
+    # (the agent + parser store original casing; we lowercase only for
+    # lookup).
     member_objs = roster.members()
-    members_by_name_all: dict[str, list[str]] = {}
-    canonical_name: dict[str, str] = {}
-    for m in member_objs:
-        members_by_name_all.setdefault(m.name.lower(), []).append(m.identifier)
-        canonical_name.setdefault(m.name.lower(), m.name)
-    # Deduped list of all identifiers across all members (for the
-    # "no @-mention given → fan to whole household" fallback).
-    all_idents: list[str] = []
-    seen = set()
-    for idents in members_by_name_all.values():
-        for ident in idents:
-            if ident not in seen:
-                seen.add(ident)
-                all_idents.append(ident)
+    members_by_name = {m.name.lower(): m.identifier for m in member_objs}
+    canonical_name = {m.name.lower(): m.name for m in member_objs}
+    all_idents = list(members_by_name.values())
     failed_to_deliver: list[tuple[str, str, str]] = []
 
     desired_jobs: dict[str, dict] = {}
@@ -706,43 +693,23 @@ def reconcile() -> None:
         for raw_n in raw_mentions:
             lower = raw_n.lower()
             display_name = canonical_name.get(lower, raw_n)
-            # Use the FIRST telegram identifier for the mention link, if
-            # any. Multi-channel members (tg + wa) get linked via their
-            # tg id — WhatsApp doesn't support inline mentions the same way.
+            ident = members_by_name.get(lower)
             chat_id_str: str | None = None
-            for ident in members_by_name_all.get(lower, []):
-                if ident.startswith("tg:"):
-                    chat_id_str = ident[len("tg:"):]
-                    break
+            if ident and ident.startswith("tg:"):
+                chat_id_str = ident[len("tg:"):]
             assignees.append((display_name, chat_id_str))
         from_chats = FROM_RE.findall(msg)
 
-        # Fan out: a single @-mention resolves to ALL of that person's
-        # identifiers (tg + wa + alexa, whatever they have listed). That
-        # way Ankit gets the reminder on Telegram AND WhatsApp, not just
-        # whichever channel happened to be listed first.
         if mentions:
-            recipients: list[str] = []
-            unresolved: list[str] = []
-            for n in mentions:
-                ids_for_name = members_by_name_all.get(n, [])
-                if ids_for_name:
-                    recipients.extend(ids_for_name)
-                else:
-                    unresolved.append(n)
+            recipients = [members_by_name[n] for n in mentions if n in members_by_name]
             if not recipients:
                 log.warning(
                     "reconcile: unknown mentions %s, falling back to from:%s or all",
                     mentions, from_chats,
                 )
-                recipients = list(from_chats) or list(all_idents)
-            elif unresolved:
-                log.info(
-                    "reconcile: partial mention resolution — known=%s unknown=%s",
-                    [n for n in mentions if n not in unresolved], unresolved,
-                )
+                recipients = from_chats or all_idents
         else:
-            recipients = list(all_idents) or list(from_chats)
+            recipients = all_idents or from_chats
 
         if not recipients:
             reason = (
