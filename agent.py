@@ -64,6 +64,22 @@ Tools available to you:
 - web_search: search the open web for current information.
 - web_fetch: retrieve a specific URL.
 
+Photos: a sender can attach a photo to a message. Common cases — a
+receipt, a school flyer or permission slip, a parking sign, a fridge
+shelf, a screenshot of a calendar, a kid's drawing. Read the image
+carefully, then take the natural action:
+- Receipt → confirm purchases against /memories/groceries/list.md
+  (move bought items to history.md), surface the total.
+- School flyer / permission slip → extract dates and add them to
+  events.md (with @mentions for the parents/kids involved).
+- Anything with a date and time → events.md.
+- Anything with contact info (vendor, doctor, plumber) → an entry under
+  knowledge/.
+- A photo with no obvious filing target → describe what you see in one
+  short sentence and ask the sender what they want done with it.
+When the caption is empty, the photo IS the message — don't ask "what's
+this?" if the contents are self-explanatory; just file it.
+
 For every message:
 1. Use `view /memories` to see what files exist (silently — never narrate
    what you found there or include directory listings in your reply).
@@ -260,12 +276,17 @@ def handle_message(
     memory_root: str | None = None,
     *,
     is_system: bool = False,
+    image_b64: str | None = None,
+    image_mime: str | None = None,
 ) -> str:
     """Run one turn through Claude with memory + web tools. Returns plain-text reply.
 
     Set is_system=True for scheduled/automated invocations: skips per-sender
     thread state and uses a different framing prompt that omits the "you have
     a human user" framing.
+
+    Pass `image_b64` (base64-encoded bytes) + `image_mime` (e.g. "image/jpeg")
+    to attach a photo. The agent sees the image alongside the text body.
     """
     base = _resolve_base(memory_root)
     memory = FileMemoryTool(base_path=base)
@@ -274,20 +295,31 @@ def handle_message(
 
     if is_system:
         thread_path = None
-        user_content = body
+        text_content = body
         system_prompt = SYSTEM_TASK_PROMPT.format(now_local=now_local, tz_name=tz_name)
     else:
         thread_path = _thread_path(base, from_phone)
         thread_tail = _load_thread_tail(thread_path)
-        user_content = body
+        text_content = body
         if thread_tail:
-            user_content = f"<recent_thread>\n{thread_tail}\n</recent_thread>\n\n{body}"
+            text_content = f"<recent_thread>\n{thread_tail}\n</recent_thread>\n\n{body}"
         system_prompt = SYSTEM_PROMPT.format(
             from_phone=from_phone,
             now_local=now_local,
             tz_name=tz_name,
             reminder_format=REMINDER_FORMAT,
         )
+
+    if image_b64:
+        user_content: list | str = [
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": image_mime or "image/jpeg", "data": image_b64},
+            },
+            {"type": "text", "text": text_content or "(photo attached, no caption)"},
+        ]
+    else:
+        user_content = text_content
 
     tools = default_tools(memory)
     messages: List[dict] = [{"role": "user", "content": user_content}]
@@ -343,7 +375,8 @@ def handle_message(
     reply = _extract_text(response.content) if response else ""
     if reply and thread_path is not None:
         try:
-            _append_thread(thread_path, today, body, reply)
+            thread_body = f"[photo] {body}".rstrip() if image_b64 else body
+            _append_thread(thread_path, today, thread_body, reply)
         except Exception:
             log.exception("thread write failed for %s", from_phone)
     return reply
