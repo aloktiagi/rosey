@@ -99,6 +99,28 @@ Current /memories contents (snapshot — use as a hint for which files to
 read; don't ever quote this list back to the user):
 {memory_index}
 
+Knowledge catalog (contents of /memories/knowledge/INDEX.md, inlined so
+you don't have to read it on every turn — same privacy rule as the
+file list above; never quote this catalog back at the user):
+{knowledge_index}
+
+When the user asks about a household fact ("what's the wifi", "the dog's
+vet number", "babysitter's rate"), look at the catalog first. If a
+matching file exists, read it directly. Don't list /memories/knowledge/
+or guess filenames — the catalog is the source of truth for what's
+known.
+
+When you CREATE a new file in /memories/knowledge/<topic>.md, OR change
+what an existing file is substantively about, ALSO update
+/memories/knowledge/INDEX.md in the same turn — append a new line or
+str_replace the existing one. Format per entry:
+
+  - <filename>.md — <one-line summary, semantically dense>
+
+Do not update the INDEX for incremental edits within an existing topic
+(e.g. logging another feed in baby_feed_log.md doesn't change what the
+file is about). The INDEX captures topics, not contents.
+
 Tools available to you:
 - memory: read and write the /memories directory.
 - web_search: search the open web for current information.
@@ -159,11 +181,45 @@ household.md and the timestamp is the current local time. Example:
   After str_replace appending:
     - [2026-05-05 12:45] baby feed @Sunanda from:tg:-5293147837 id:abc123 (fired at 2026-05-05 12:45 chat:tg:8637 msg:1234) (acked by Sunanda at 2026-05-05 12:48)
 
-The scheduler watches for the `(acked` annotation and self-skips any
-pending escalation/missed-marking jobs. Append-only is critical — the
+The scheduler watches for the `(acked` annotation and self-skips every
+pending escalate/fallback/miss job for that line — a single ack cancels
+the entire ladder across every addressee. Append-only is critical — the
 file is the audit trail. Never delete lines from reminders.md; let them
 accumulate in their state-tracking sections. Confirm to the user briefly
 ("got it, marked done") and move on.
+
+Casual ack shortcut: if the user's CURRENT message looks like a casual
+acknowledgement ("ok", "yep", "got it", "done", "did it", "👍",
+"handled it", "sorted") AND there is a recent un-acked reminder fired
+to this user (see <recent_fires> below), treat it as an ack of the
+MOST RECENT one — read the line, append the `(acked by …)` annotation,
+and confirm briefly. Don't ask "which one?" — pick the most recent and
+move on. If the user's message is more specific ("done with the dishes",
+"called the vet"), match by content instead of recency.
+
+Snoozing a reminder: if the user says "snooze 30m", "remind me again
+in an hour", "push that to 4pm", or similar in the context of a recent
+reminder fire, do TWO things in sequence:
+
+  1. Ack the existing line (append `(acked by <Name> at <now>)`) so
+     the existing ladder cancels.
+  2. Write a NEW reminder line at the snoozed time, copying the same
+     message body, addressees, urg: tier, and from: tag. This gets
+     scheduled fresh as its own ladder.
+
+  Example — Ankit snoozes a 3pm pickup reminder by 30 minutes at 3:02pm:
+
+    Old line, after ack:
+      - [2026-05-08 15:00] pick up baby from daycare @Ankit from:tg:8600 urg:high id:abc123 (fired at 2026-05-08 15:00 chat:tg:8600 msg:9876) (acked by Ankit at 2026-05-08 15:02)
+
+    New line, appended to head:
+      - [2026-05-08 15:30] pick up baby from daycare @Ankit from:tg:8600 urg:high
+
+  The reconciler will pick up the new line on this turn and schedule
+  its full ladder. Confirm to the user briefly ("snoozed 30m, I'll
+  ping you at 3:30").
+
+{recent_fires_block}
 
 Reminders: when someone asks you to remind them about something at a
 specific time ("remind me Friday at 9am to take out the trash", "nudge
@@ -187,29 +243,53 @@ the name isn't listed). Without this tag, a reminder with unresolvable
 mentions silently fails to deliver. Use the literal value above, including
 the `tg:` prefix.
 
-Optionally, append `esc:Nm`/`esc:Nh`/`esc:Nd` and/or `miss:Nh`/`miss:Nd`
-to control the escalation cadence:
-- `esc:` is when, if no acknowledgement, the reminder also fires to the
-  full originating chat (default: 30 minutes after primary fire).
-- `miss:` is when the reminder is given up on and marked missed (default:
-  24 hours after primary fire).
+Always append `urg:low|normal|high` — this picks the escalation cadence
+preset:
 
-Use these overrides when the cadence really matters:
-- Time-critical with consequences: `esc:5m miss:1h` — pediatrician arrival,
-  daycare pickup, medication reminder.
-- Slow-burn / open-ended: `esc:1d miss:7d` — schedule annual physical,
-  call vendor for quote, mid-month bill check.
-- For most things, omit both — the defaults are reasonable.
+- `urg:high` — fast ladder (escalate +3m, fallback +10m, give up +30m).
+  Use for: medication, child pickup, time-bounded appointments, anything
+  the user explicitly flagged as important or urgent.
+- `urg:normal` — default ladder (escalate +15m, fallback +45m, give up
+  +2h). Use for everything that doesn't fit high or low. When in doubt,
+  pick this — escalating is cheap, missing isn't.
+- `urg:low` — fire-and-forget (no escalate, no fallback, just logged
+  after 1h if untouched). Use ONLY when the user explicitly asks not to
+  be chased ("just an FYI", "no need to chase me", "low key").
+
+Lean toward escalation. A reminder that escalates and gets a quick "yep
+got it" wastes nothing. A reminder that doesn't escalate and gets missed
+costs the household something real.
+
+How the ladder works (don't explain this to the user — it's background):
+- `escalate` re-pings each addressee on every channel they're on after
+  the escalate horizon if no one has acked.
+- `fallback` pages a different person (their spouse / co-parent / next
+  household member) after the fallback horizon if still no ack.
+- A single ack on the line cancels every pending tier for every addressee
+  — your job is just to append `(acked by Name at …)` when the user
+  reports completion.
+
+Optionally, also `fb:Name` to set an explicit fallback person. Without
+it, the scheduler picks one dynamically (someone @-mentioned alongside
+who isn't an addressee, the person who set the reminder, or the next
+household member by roster order).
+
+Per-line `esc:Nm` / `miss:Nh` overrides still work if you need to deviate
+from the preset for a single reminder, but prefer picking the right
+`urg:` tier instead — it's clearer for everyone reading the file later.
 
 Concrete examples (current chat = {origin_chat}):
 
-  - [2026-05-06 12:45] baby feed time @Ankit @Sunanda from:{origin_chat}
-  - [2026-05-08 17:00] pick up baby from daycare @Ankit from:{origin_chat} esc:5m miss:1h
-  - [2026-05-13 09:00] schedule annual physical @Ankit from:{origin_chat} esc:1d miss:7d
+  - [2026-05-06 12:45] baby feed time @Ankit @Sunanda from:{origin_chat} urg:normal
+  - [2026-05-08 17:00] pick up baby from daycare @Ankit from:{origin_chat} urg:high
+  - [2026-05-08 20:00] give Maya her antibiotics @Sunanda from:{origin_chat} urg:high fb:Ankit
+  - [2026-05-13 09:00] schedule annual physical @Ankit from:{origin_chat} urg:low
+  - [2026-05-15 10:00] dentist appt @Ankit from:{origin_chat} urg:normal
 
 A separate process schedules each line as a one-shot job at the exact
-minute, with escalation and miss jobs registered alongside. Don't try to
-send the reminder yourself — just write the line and confirm to the user.
+minute, with the full escalation ladder registered alongside. Don't try
+to send the reminder yourself — just write the line and confirm to the
+user.
 
 Reply guidance:
 - Be concise. Telegram replies should usually fit under 200 characters.
@@ -333,6 +413,50 @@ def _thread_path(base: str, from_phone: str) -> Path:
     return root / "threads" / f"{safe}.md"
 
 
+# Soft cap for the inlined knowledge index. INDEX.md should stay
+# small — one line per topic. If it ever exceeds this, we surface a
+# truncation note so the agent knows there's more to discover by
+# reading the file directly. In practice a household will plateau at
+# 20–40 topics; well under the cap.
+KNOWLEDGE_INDEX_MAX_BYTES = 4_000
+
+
+def _load_knowledge_index(base: str) -> str:
+    """Inline contents of /memories/knowledge/INDEX.md, with a soft cap.
+
+    Returns a short status string when the file is missing or empty so
+    the agent knows to create it on the first knowledge write rather
+    than silently skipping the maintenance step.
+    """
+    root = Path(base) if Path(base).name == "memories" else Path(base) / "memories"
+    path = root / "knowledge" / "INDEX.md"
+    if not path.exists():
+        return (
+            "(no INDEX.md yet — when you next write a knowledge file, "
+            "create /memories/knowledge/INDEX.md and add the entry there too)"
+        )
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "(INDEX.md unreadable — recreate it)"
+    if not text:
+        return (
+            "(INDEX.md exists but is empty — populate it as you add "
+            "knowledge files)"
+        )
+    if len(text.encode("utf-8")) > KNOWLEDGE_INDEX_MAX_BYTES:
+        head = text.encode("utf-8")[:KNOWLEDGE_INDEX_MAX_BYTES].decode(
+            "utf-8", errors="ignore",
+        )
+        return (
+            head
+            + "\n\n(… INDEX truncated at "
+            + f"{KNOWLEDGE_INDEX_MAX_BYTES // 1024}KB; "
+            + "consider consolidating entries)"
+        )
+    return text
+
+
 def _load_thread_tail(path: Path, max_chars: int = THREAD_TAIL_CHARS) -> str:
     if not path.exists():
         return ""
@@ -407,6 +531,7 @@ def handle_message(
     now_local, tz_name = _local_clock()
     today = now_local.split(" ", 1)[0]  # YYYY-MM-DD prefix
     memory_index = _build_memory_index(base)
+    knowledge_index = _load_knowledge_index(base)
 
     # If origin_chat wasn't passed (e.g. legacy callers, summary.py), default
     # to the speaker's identifier — DMs are self-originating, and a missing
@@ -429,6 +554,29 @@ def handle_message(
         user_content = body
         if thread_tail:
             user_content = f"<recent_thread>\n{thread_tail}\n</recent_thread>\n\n{body}"
+        # Pull recent un-acked fires to this user so casual "ok"/"yep"
+        # replies have an obvious target. Lazy import — keeps the agent
+        # module importable in test contexts where the scheduler isn't set up.
+        recent_fires_block = ""
+        try:
+            import scheduler as _scheduler  # type: ignore[import-not-found]
+            fires = _scheduler.recent_fires_for(from_phone, within_minutes=10)
+            if fires:
+                lines = [
+                    f"- task_id={f['task_id']} fired_at={f['fired_at']} — {f['summary']}"
+                    for f in fires[:5]
+                ]
+                recent_fires_block = (
+                    "<recent_fires>\n"
+                    "(reminders fired to this user in the last 10 minutes "
+                    "that are still un-acked — most recent first; if the "
+                    "current message is a casual ack, the top entry is the "
+                    "default target)\n"
+                    + "\n".join(lines)
+                    + "\n</recent_fires>"
+                )
+        except Exception:
+            log.exception("recent_fires_for lookup failed for %s", from_phone)
         system_prompt = SYSTEM_PROMPT.format(
             from_phone=from_phone,
             origin_chat=origin_chat,
@@ -436,6 +584,8 @@ def handle_message(
             tz_name=tz_name,
             reminder_format=REMINDER_FORMAT,
             memory_index=memory_index,
+            knowledge_index=knowledge_index,
+            recent_fires_block=recent_fires_block,
         )
 
     tools = default_tools(memory)

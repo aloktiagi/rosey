@@ -204,6 +204,31 @@ async def whatsapp_event_route():
     return Response("", status=200)
 
 
+@asgi_app.route("/whatsapp-baileys", methods=["POST"])
+async def whatsapp_baileys_route():
+    """Receive an inbound WhatsApp message from the Baileys sidecar.
+
+    Schema is what `baileys/index.js` POSTs (NOT Meta's nested envelope):
+    { message_id, sender_phone, sender_jid, chat_jid, is_group, text, ... }
+
+    Auth: X-Bridge-Secret header must match BAILEYS_BRIDGE_SECRET. The
+    sidecar runs in the same container so loopback is the only path here,
+    but defense in depth — a misconfigured deployment that exposed
+    127.0.0.1:8080 wouldn't be open to spoofed inbound traffic.
+    """
+    secret = os.environ.get("BAILEYS_BRIDGE_SECRET", "")
+    provided = request.headers.get("X-Bridge-Secret", "")
+    if not secret or provided != secret:
+        log.warning("baileys-inbound: rejected request with bad bridge secret")
+        return Response("forbidden", status=403)
+
+    body = await request.get_json(force=True, silent=True)
+    if body is None:
+        return Response("bad request", status=400)
+    await whatsapp_handler.handle_baileys_event(body)
+    return Response("", status=200)
+
+
 @asgi_app.route("/health", methods=["GET"])
 async def health_route():
     return Response("ok", mimetype="text/plain")

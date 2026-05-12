@@ -141,3 +141,72 @@ async def _handle_message(msg: dict, value: dict) -> None:
     if reply:
         from channels import send
         await asyncio.to_thread(send, sender_id, reply)
+
+
+# ---------------------------------------------------------------------------
+# Baileys path — group-aware. The Cloud API path above can't reach groups
+# (Meta gates that behind Official Business Account status), so the
+# Baileys sidecar exists specifically to let Rosey participate in
+# user-created WhatsApp groups. The shape of the inbound payload is
+# whatever Node's index.js posts to /whatsapp-baileys, NOT Meta's
+# nested entry/changes envelope.
+# ---------------------------------------------------------------------------
+
+async def handle_baileys_event(payload: dict) -> None:
+    """Process an inbound message from the Baileys sidecar. Schema:
+        {
+          "message_id": "<wamid>",
+          "sender_phone": "15551234567",     # E.164 without +
+          "sender_jid":   "15551234567@s.whatsapp.net",
+          "chat_jid":     "120363xx@g.us"   if group, else same as sender_jid,
+          "is_group":     true|false,
+          "text":         "the message body",
+          "push_name":    "Sunanda" | null,
+          "timestamp":    1731000000
+        }
+    """
+    text = (payload.get("text") or "").strip()
+    if not text:
+        return
+    sender_phone = payload.get("sender_phone") or ""
+    chat_jid = payload.get("chat_jid") or ""
+    is_group = bool(payload.get("is_group"))
+
+    # Canonical sender identifier — the human who actually spoke.
+    sender_id = f"wa:+{sender_phone}"
+
+    # Where to reply: in a group, reply to the GROUP (so the conversation
+    # stays in-thread); in a DM, reply to the speaker. Identifier
+    # convention:
+    #   wa:group:<JID>   → Baileys recognizes group destinations
+    #   wa:+<phone>      → DM
+    if is_group:
+        reply_target = f"wa:group:{chat_jid}"
+        # origin_chat for any reminders the agent writes points back to
+        # this group, so future scheduler fan-outs that resolve via the
+        # `from:` tag will fire into the group too.
+        origin_chat = reply_target
+    else:
+        reply_target = sender_id
+        origin_chat = sender_id
+
+    log.info(
+        "baileys: msg from=%s in=%s text_len=%d",
+        sender_phone, "group" if is_group else "dm", len(text),
+    )
+
+    try:
+        reply = await asyncio.to_thread(
+            handle_message, sender_id, text, origin_chat=origin_chat,
+        )
+    except Exception:
+        log.exception("baileys: agent failure for %s", sender_id)
+        reply = "Something went wrong. Try again in a moment."
+
+    # Empty reply = agent decided not to respond (fuzzy gate said NO,
+    # or other intentional silence). Don't post anything.
+    if not reply:
+        return
+
+    from channels import send
+    await asyncio.to_thread(send, reply_target, reply)

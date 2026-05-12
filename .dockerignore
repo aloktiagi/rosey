@@ -12,3 +12,7 @@ memories
 .ruff_cache
 *.log
 router.db
+# Don't ship local node_modules into the image — Dockerfile installs
+# fresh inside the build via `npm install --omit=dev`.
+baileys/node_modules
+baileys/package-lock.json

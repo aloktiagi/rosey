@@ -1,6 +1,6 @@
 # Rosey
 
-A small, shared assistant your household talks to over chat.
+A shared assistant for your whole family, reachable from the chat apps you already use.
 
 > Lists, reminders, family knowledge, web research, voice notes — all by text.
 > Backed by Claude with the [Memory Tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool), so the agent organizes everything as plain markdown files you can read, back up, or grep.
@@ -26,20 +26,26 @@ Rosey:  ✓ I'll nudge you at 09:00 Fri.
 
 ## Requirements
 
-- **Python 3.9+** (`python3 --version`). The Docker image uses 3.11; local dev works on 3.9+.
-- **git** (`git --version`).
-- **A Telegram bot token** — get one from [@BotFather](https://t.me/BotFather) (free, ~30s).
-- **An Anthropic API key** — [console.anthropic.com](https://console.anthropic.com) → API Keys.
-- **OpenAI API key** *(optional)* — only if you want voice-note transcription via Whisper.
-- **flyctl** — *only* if you want to deploy to Fly.io. Install: <https://fly.io/docs/hands-on/install-flyctl/>.
+- A **Telegram bot token** — get one from [@BotFather](https://t.me/BotFather) (free, ~30s).
+- An **Anthropic API key** — [platform.claude.com → API Keys](https://platform.claude.com/settings/workspaces/default/keys).
+- A **Fly.io account** + **flyctl** installed: <https://fly.io/docs/hands-on/install-flyctl/>. (Or pick a different host — see [Costs](#costs).)
+- **git** for cloning the repo.
+- *(Optional)* An **OpenAI API key** if you want voice-note transcription via Whisper.
 
 ---
 
-## Quickstart (self-host with Telegram, ~10 min)
+## Setup
 
-The fastest setup. Runs anywhere — your laptop, a Raspberry Pi, or a Fly.io VM.
+About an hour end-to-end if you've shipped a webhook before.
 
-**1. Make a Telegram bot.**
+**1. Clone the repo.**
+
+```bash
+git clone https://github.com/atandon1994/rosey && cd rosey
+```
+
+**2. Get a Telegram bot token from @BotFather.**
+
 Open Telegram, message [@BotFather](https://t.me/BotFather):
 
 ```
@@ -48,56 +54,13 @@ Rosey
 my_household_rosey_bot
 ```
 
-Save the token he gives you. Looks like `1234567890:AAEh...`.
+Save the token he gives you. It looks like `1234567890:AAEh...`.
 
-**2. Get an Anthropic API key.**
-[console.anthropic.com](https://console.anthropic.com) → API Keys → Create Key. Add a few dollars of credit.
+**3. Get an Anthropic API key.**
 
-**3. Clone & configure.**
+Go to [platform.claude.com → API Keys](https://platform.claude.com/settings/workspaces/default/keys), create a key, and add a few dollars of credit. (See [Costs](#costs) for what to expect.)
 
-```bash
-git clone https://github.com/aloktiagi/rosey
-cd rosey
-python3.11 -m venv .venv
-.venv/bin/pip install -e '.[telegram]'
-
-cp .env.example .env
-# Fill in:
-#   ANTHROPIC_API_KEY=sk-ant-...
-#   TELEGRAM_BOT_TOKEN=1234567890:AAEh...
-#   SCHEDULER_TZ=America/Los_Angeles  (your timezone)
-#   MEMORY_ROOT=./memories
-```
-
-**4. Run it.**
-
-```bash
-.venv/bin/python -m telegram_bot
-```
-
-That's it. Open Telegram, find your bot by username, hit `/start`. Tell each family member to do the same — the bot will tell them their `chat_id`, and you paste each one into `memories/household.md`:
-
-```markdown
-# Household
-
-Members:
-- Alex (tg:12345678)
-- Sam (tg:87654321)
-
-Shopping cadence: weekly
-```
-
-Once they're listed, every message they send goes through the agent. (If `household.md` is empty, the bot trusts everyone — fine for an initial test.)
-
----
-
-## Quickstart (self-host on Fly.io, persistent + free-ish)
-
-Same as above, but instead of running on your laptop, deploy to Fly so the bot is always on. ~$5/mo for the VM, free for the volume.
-
-**1. Install the Fly CLI** ([docs](https://fly.io/docs/hands-on/install-flyctl/)).
-
-**2. Provision and deploy.**
+**4. Deploy to Fly.io.**
 
 ```bash
 fly launch --no-deploy --copy-config --name <your-bot-name>
@@ -112,9 +75,76 @@ fly secrets set \
 fly deploy
 ```
 
-The presence of `TELEGRAM_WEBHOOK_URL` switches the bot from polling to webhook mode automatically. The bot is now reachable through Fly's load balancer; Telegram delivers updates directly.
+The `TELEGRAM_WEBHOOK_URL` secret switches the bot from polling to webhook mode automatically. Telegram delivers updates straight through Fly's load balancer.
 
-(Optional) If you want voice-note transcription, add `OPENAI_API_KEY` to the secrets above and set `pip install -e '.[telegram]'` deps include `requests`. Telegram → Whisper → agent.
+*(Optional)* Add `OPENAI_API_KEY=...` to the secrets above for voice-note transcription via Whisper.
+
+**5. Edit `memories/household.md` with your family.**
+
+Have each person send `/start` to the bot once — she'll reply with their Telegram chat ID. Paste them into the file:
+
+```markdown
+# Household
+
+Members:
+- Alex (tg:12345678)
+- Sam (tg:87654321)
+```
+
+(If `household.md` is empty, the bot trusts everyone — fine for an initial test.)
+
+**6. Text your bot.**
+
+Open Telegram, find your bot by username, send her a message. She'll respond.
+
+That's the full Telegram path. WhatsApp and Alexa channels are optional bolt-ons; their setup lives in the repo's `docs/` (link will work once the docs are published).
+
+---
+
+## Costs
+
+Two line items.
+
+**Hosting.** Fly.io's smallest shared-CPU VM with a 1GB persistent volume runs about **$5/mo**. The volume is free below 3GB; the VM is the line item.
+
+**Anthropic API.** Usage-based. For a typical family with 20–40 messages a day across all members, plan on **$5–15/mo**. Prompt caching covers most of the system-prompt overhead, so the bulk of your bill is output tokens. Current rates: [anthropic.com/pricing](https://www.anthropic.com/pricing).
+
+**Total: roughly $10–20/mo** for a moderately active family. Heavier use (lots of reminders, lots of members, lots of web research) can push this to $20–40/mo.
+
+### Alternatives that lower or eliminate the hosting bill
+
+- **Raspberry Pi at home** — $0/mo ongoing once you've bought the Pi. You'll need a stable address for Telegram's webhook; [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) and [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) are the easiest paths.
+- **Hetzner / DigitalOcean / Linode VPS** — $4–6/mo for a comparable VM. Hetzner is the cheapest of the three.
+- **Render / Railway** — ~$7/mo. Similar developer experience to Fly.
+- **An existing home server or NAS** — $0/mo if you already have one running. Docker-Compose works.
+
+### Alternatives that lower the API bill
+
+- **Switch the model.** Edit `agent.py` to use Claude Haiku instead of Sonnet — significantly cheaper, with a real (but often acceptable) capability drop for everyday family tasks.
+- **Cap tool iterations.** `MAX_TOOL_ITERATIONS` in `agent.py` controls how many tool calls Rosey makes per message. Lowering it reduces worst-case cost when the agent thrashes.
+
+---
+
+## Alternative: run locally for testing
+
+Skip Fly and run on your laptop or Raspberry Pi:
+
+```bash
+git clone https://github.com/atandon1994/rosey && cd rosey
+python3.11 -m venv .venv
+.venv/bin/pip install -e '.[telegram]'
+
+cp .env.example .env
+# Fill in:
+#   ANTHROPIC_API_KEY=sk-ant-...
+#   TELEGRAM_BOT_TOKEN=1234567890:AAEh...
+#   SCHEDULER_TZ=America/Los_Angeles  (your timezone)
+#   MEMORY_ROOT=./memories
+
+.venv/bin/python -m telegram_bot
+```
+
+Uses Telegram's long-polling mode, so no public URL needed. Good for hacking on the agent locally; not recommended as a long-term host since the bot dies when your laptop sleeps.
 
 ---
 

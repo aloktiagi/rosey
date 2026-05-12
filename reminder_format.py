@@ -9,7 +9,10 @@ from __future__ import annotations
 import re
 
 # What the agent is instructed to produce. Used verbatim in the system prompt.
-FORMAT_DOC = "- [YYYY-MM-DD HH:MM] short message @Name1 @Name2 from:tg:<chat_id>"
+# `urg:` is optional but encouraged — it picks the escalation cadence preset
+# (low / normal / high) so the agent doesn't have to compute esc:/miss: deltas
+# by hand. Explicit esc:/miss: still override the preset when present.
+FORMAT_DOC = "- [YYYY-MM-DD HH:MM] short message @Name1 @Name2 from:tg:<chat_id> urg:normal"
 
 # What the parser matches. Two capture groups:
 #   1: the timestamp ("YYYY-MM-DD HH:MM" or with a "T" between date and time)
@@ -43,14 +46,36 @@ ESC_RE = re.compile(r"\besc:(\d+)([mhd])\b")
 # this, the line moves to ## Missed.
 MISS_RE = re.compile(r"\bmiss:(\d+)([hd])\b")
 
+# `urg:low|normal|high` — escalation tier preset. Maps to default
+# (escalate, fallback, miss) interval triples in scheduler.URGENCY_INTERVALS.
+# Picked by the agent at schedule time based on the request shape:
+#   high   — medication, child pickup, time-bounded appointments, anything
+#            the user flagged as "important"
+#   low    — explicit "don't chase me" / FYI-style reminders
+#   normal — everything else; escalate-by-default
+# When absent, the scheduler falls back to "normal". Explicit esc:/miss:
+# tags on the same line override the preset for those individual horizons.
+URG_RE = re.compile(r"\burg:(low|normal|high)\b")
+
+# `fb:Name` — agent-set fallback recipient. When present, this person
+# (resolved against household.md) gets the fallback ping if the
+# addressee(s) don't ack in time. When absent, the scheduler picks
+# dynamically: another @-mentioned person on the line who isn't an
+# addressee → person who set the reminder if different → next household
+# member by roster order. If nothing resolves, the fallback tier is
+# silently skipped.
+FB_RE = re.compile(r"\bfb:(\w+)\b")
+
 # Annotations the scheduler (or agent, on natural-language ack) appends in
 # parens at the end of the line. Order shown is the natural lifecycle:
-#   (fired at T chat:C msg:M)         — primary fire happened
-#   (escalated to group at T)          — fanned out because no ack in time
-#   (acked by Name at T)               — terminal: handled
-#   (missed at T)                      — terminal: gave up
+#   (fired at T chat:C msg:M)         — primary fire happened (one per addressee)
+#   (escalated to chat:C msg:M at T)  — louder re-ping (one per addressee)
+#   (fallback to Name chat:C msg:M at T) — fallback person paged
+#   (acked by Name at T)               — terminal: handled (kills all pending jobs)
+#   (missed at T)                      — terminal: gave up (logged, no more pings)
 ACKED_RE = re.compile(r"\(acked\b")
 ESCALATED_RE = re.compile(r"\(escalated\b")
+FALLBACK_RE = re.compile(r"\(fallback\b")
 FIRED_AT_RE = re.compile(r"\(fired at ")
 # Capture the (chat:C msg:M) pair from a fired-annotation, used for
 # reply-to-bot ack lookup.

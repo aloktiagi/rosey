@@ -1,0 +1,1136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rosey — a shared assistant for your whole family</title>
+  <meta name="description" content="A shared assistant for your whole family. Reminders, vet numbers, who's on pickup — reachable from the chats you already use. Self-hosted, so your data stays yours." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #fafaf7;
+      --surface: #ffffff;
+      --surface-tint: #f3f1ec;
+      --ink: #15140f;
+      --ink-soft: #4a4943;
+      --ink-faint: #807d74;
+      --rule: #e7e4dc;
+      --accent: #c2410c;            /* warm terracotta */
+      --accent-soft: #fde8d5;
+      --code-bg: #14130f;
+      --code-ink: #ece7dc;
+      --code-comment: #807d74;
+      --code-string: #f0a771;
+      --code-keyword: #b8c8ff;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 17px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+
+    a { color: inherit; text-decoration: none; }
+    a:hover { color: var(--accent); }
+
+    .wrap {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 0 32px;
+    }
+
+    /* ─── nav ─────────────────────────────────────────────── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      backdrop-filter: saturate(180%) blur(12px);
+      -webkit-backdrop-filter: saturate(180%) blur(12px);
+      background: rgba(250, 250, 247, 0.78);
+      border-bottom: 1px solid transparent;
+      transition: border-color .2s ease;
+    }
+    nav.scrolled { border-bottom-color: var(--rule); }
+    nav .wrap {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 64px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      font-size: 18px;
+    }
+    .brand-mark {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: var(--accent);
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-family: 'Newsreader', serif;
+      font-style: italic;
+      font-weight: 500;
+      font-size: 17px;
+      line-height: 1;
+      padding-bottom: 2px;
+    }
+    .nav-links {
+      display: flex;
+      gap: 28px;
+      align-items: center;
+      font-size: 15px;
+      color: var(--ink-soft);
+    }
+    .nav-links a:hover { color: var(--ink); }
+    .nav-cta {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      background: var(--ink);
+      color: #fff !important;
+      border-radius: 999px;
+      font-size: 14px;
+      font-weight: 500;
+      transition: background .15s ease;
+    }
+    .nav-cta:hover { background: #000; color: #fff !important; }
+    @media (max-width: 720px) {
+      .nav-links a:not(.nav-cta) { display: none; }
+    }
+
+    /* ─── hero ────────────────────────────────────────────── */
+    .hero {
+      padding: 96px 0 80px;
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 28px;
+    }
+    .eyebrow .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+    h1 {
+      font-family: 'Newsreader', serif;
+      font-weight: 500;
+      font-size: clamp(40px, 7vw, 76px);
+      line-height: 1.04;
+      letter-spacing: -0.025em;
+      margin: 0 0 24px;
+      max-width: 14ch;
+    }
+    h1 em {
+      font-style: italic;
+      color: var(--accent);
+    }
+    .hero p.lede {
+      font-size: clamp(18px, 2vw, 22px);
+      line-height: 1.5;
+      color: var(--ink-soft);
+      max-width: 56ch;
+      margin: 0 0 36px;
+    }
+    .hero-ctas {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 20px;
+      border-radius: 999px;
+      font-weight: 500;
+      font-size: 15px;
+      transition: transform .12s ease, background .15s ease, box-shadow .15s ease;
+    }
+    .btn-primary {
+      background: var(--ink);
+      color: #fff !important;
+    }
+    .btn-primary:hover { background: #000; color: #fff !important; transform: translateY(-1px); }
+    .btn-secondary {
+      background: transparent;
+      color: var(--ink) !important;
+      border: 1px solid var(--rule);
+    }
+    .btn-secondary:hover { border-color: var(--ink); color: var(--ink) !important; }
+
+    /* ─── hero illustration: chat preview ─────────────────── */
+    .chat-preview {
+      margin-top: 64px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      max-width: 920px;
+    }
+    @media (max-width: 720px) {
+      .chat-preview { grid-template-columns: 1fr; }
+    }
+    .device {
+      background: var(--surface);
+      border: 1px solid var(--rule);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 1px 0 rgba(0,0,0,.02), 0 12px 32px -12px rgba(15,15,10,.08);
+    }
+    .device-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--rule);
+      margin-bottom: 14px;
+      font-size: 13px;
+      color: var(--ink-faint);
+    }
+    .device-head .who {
+      display: flex; align-items: center; gap: 8px;
+      font-weight: 500;
+      color: var(--ink);
+    }
+    .pill {
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+    .pill-tg { background: #e3f1fb; color: #1f74b5; }
+    .pill-wa { background: #e1f3e7; color: #1d8048; }
+    .msg {
+      display: flex;
+      margin: 10px 0;
+    }
+    .msg.them { justify-content: flex-start; }
+    .msg.you { justify-content: flex-end; }
+    .bubble {
+      max-width: 82%;
+      padding: 10px 14px;
+      border-radius: 16px;
+      font-size: 14.5px;
+      line-height: 1.45;
+    }
+    .msg.them .bubble {
+      background: var(--surface-tint);
+      color: var(--ink);
+      border-bottom-left-radius: 4px;
+    }
+    .msg.you .bubble {
+      background: var(--accent);
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+    .bubble small {
+      display: block;
+      margin-top: 4px;
+      opacity: .65;
+      font-size: 11px;
+    }
+
+    /* ─── sections ────────────────────────────────────────── */
+    section { padding: 96px 0; }
+    section.tinted { background: var(--surface-tint); }
+
+    .section-eyebrow {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 16px;
+    }
+    h2 {
+      font-family: 'Newsreader', serif;
+      font-weight: 500;
+      font-size: clamp(32px, 5vw, 48px);
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      margin: 0 0 20px;
+      max-width: 22ch;
+    }
+    h2 em { font-style: italic; color: var(--accent); }
+    .section-lede {
+      font-size: 19px;
+      line-height: 1.55;
+      color: var(--ink-soft);
+      max-width: 60ch;
+      margin: 0 0 56px;
+    }
+
+    /* ─── feature cards ────────────────────────────────────── */
+    .features {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+    }
+    @media (max-width: 860px) {
+      .features { grid-template-columns: 1fr; }
+    }
+    .feature {
+      background: var(--surface);
+      border: 1px solid var(--rule);
+      border-radius: 18px;
+      padding: 28px;
+      transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+    }
+    .feature:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 1px 0 rgba(0,0,0,.02), 0 16px 36px -16px rgba(15,15,10,.1);
+      border-color: #d8d4ca;
+    }
+    .feature-icon {
+      width: 40px; height: 40px;
+      border-radius: 10px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      display: grid; place-items: center;
+      margin-bottom: 18px;
+    }
+    .feature h3 {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      margin: 0 0 8px;
+    }
+    .feature p {
+      font-size: 15px;
+      color: var(--ink-soft);
+      margin: 0;
+      line-height: 1.5;
+    }
+
+    /* ─── architecture diagram ─────────────────────────────── */
+    .arch {
+      background: var(--surface);
+      border: 1px solid var(--rule);
+      border-radius: 22px;
+      padding: 40px;
+      margin-bottom: 56px;
+    }
+    @media (max-width: 720px) {
+      .arch { padding: 24px; }
+    }
+    .arch-svg-wrap {
+      width: 100%;
+      overflow-x: auto;
+    }
+    .arch svg {
+      width: 100%;
+      height: auto;
+      max-width: 100%;
+      display: block;
+    }
+    .arch text {
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+      fill: var(--ink);
+    }
+    .arch text.label-faint { fill: var(--ink-faint); font-size: 11px; }
+    .arch text.label-tag { font-weight: 600; font-size: 12px; }
+    .arch rect.box {
+      fill: var(--surface);
+      stroke: var(--rule);
+      stroke-width: 1.5;
+    }
+    .arch rect.box-accent {
+      fill: var(--accent-soft);
+      stroke: var(--accent);
+      stroke-width: 1.5;
+    }
+    .arch line.flow, .arch path.flow {
+      stroke: var(--ink-faint);
+      stroke-width: 1.5;
+      fill: none;
+    }
+
+    /* ─── deep dive ──────────────────────────────────────── */
+    .deep {
+      display: grid;
+      grid-template-columns: 1fr 1.1fr;
+      gap: 56px;
+      align-items: start;
+    }
+    @media (max-width: 860px) {
+      .deep { grid-template-columns: 1fr; gap: 32px; }
+    }
+    .deep-item {
+      padding: 28px 0;
+      border-top: 1px solid var(--rule);
+    }
+    .deep-item:first-child { border-top: 0; padding-top: 0; }
+    .deep-item h3 {
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.015em;
+      margin: 0 0 10px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .deep-item h3 .num {
+      font-family: 'Newsreader', serif;
+      font-style: italic;
+      font-weight: 500;
+      color: var(--accent);
+      font-size: 18px;
+    }
+    .deep-item p {
+      font-size: 15.5px;
+      color: var(--ink-soft);
+      margin: 0;
+      line-height: 1.55;
+    }
+
+    /* ─── code window ───────────────────────────────────── */
+    .code {
+      background: var(--code-bg);
+      color: var(--code-ink);
+      border-radius: 14px;
+      padding: 0;
+      overflow: hidden;
+      font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+      font-size: 13px;
+      box-shadow: 0 1px 0 rgba(0,0,0,.04), 0 16px 40px -16px rgba(15,15,10,.18);
+      position: sticky;
+      top: 88px;
+    }
+    @media (max-width: 860px) {
+      .code { position: static; }
+    }
+    .code-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      background: rgba(255,255,255,.03);
+      border-bottom: 1px solid rgba(255,255,255,.06);
+      font-family: 'Inter', sans-serif;
+      font-size: 12px;
+      color: var(--code-comment);
+    }
+    .code-head .dots {
+      display: flex; gap: 6px;
+    }
+    .code-head .dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: rgba(255,255,255,.12);
+    }
+    .code-body {
+      padding: 18px 20px;
+      line-height: 1.65;
+      overflow-x: auto;
+      white-space: pre;
+    }
+    .c-c { color: var(--code-comment); font-style: italic; }
+    .c-k { color: var(--code-keyword); }
+    .c-s { color: var(--code-string); }
+    .c-d { color: #6dd0a8; }
+
+    /* ─── transcript example ───────────────────────────── */
+    .transcript {
+      background: var(--surface);
+      border: 1px solid var(--rule);
+      border-radius: 18px;
+      padding: 28px;
+      max-width: 720px;
+      margin: 0 auto;
+    }
+    .transcript-line {
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      gap: 16px;
+      padding: 14px 0;
+      border-top: 1px solid var(--rule);
+      align-items: start;
+    }
+    .transcript-line:first-child { border-top: 0; padding-top: 0; }
+    .transcript-line .who {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .transcript-line .name {
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .transcript-line .channel {
+      font-size: 11px;
+      color: var(--ink-faint);
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .transcript-line .what {
+      font-size: 15px;
+      line-height: 1.5;
+    }
+    .transcript-line.rosey .what { color: var(--ink); }
+    .transcript-line .what em {
+      font-style: italic;
+      color: var(--ink-faint);
+      font-size: 13px;
+    }
+
+    /* ─── self-host CTA ─────────────────────────────────── */
+    .selfhost {
+      background: var(--ink);
+      color: #fff;
+      border-radius: 24px;
+      padding: 64px 48px;
+      text-align: center;
+    }
+    @media (max-width: 720px) { .selfhost { padding: 40px 24px; } }
+    .selfhost h2 {
+      color: #fff;
+      margin: 0 auto 16px;
+      max-width: 18ch;
+    }
+    .selfhost h2 em { color: #f5b27a; }
+    .selfhost p {
+      color: #c8c4b9;
+      max-width: 50ch;
+      margin: 0 auto 36px;
+      font-size: 17px;
+    }
+    .install-strip {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      background: rgba(255,255,255,.06);
+      border: 1px solid rgba(255,255,255,.1);
+      border-radius: 999px;
+      padding: 8px 8px 8px 20px;
+      font-family: 'SF Mono', monospace;
+      font-size: 14px;
+      color: #ece7dc;
+      margin-bottom: 28px;
+    }
+    .install-strip button {
+      background: rgba(255,255,255,.1);
+      color: #fff;
+      border: 0;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background .15s ease;
+    }
+    .install-strip button:hover { background: rgba(255,255,255,.16); }
+    .selfhost-ctas {
+      display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;
+    }
+    .selfhost .btn-primary {
+      background: #fff;
+      color: var(--ink) !important;
+    }
+    .selfhost .btn-primary:hover { background: #f0ede5; color: var(--ink) !important; }
+    .selfhost .btn-secondary {
+      color: #fff !important;
+      border-color: rgba(255,255,255,.18);
+    }
+    .selfhost .btn-secondary:hover { border-color: #fff; color: #fff !important; }
+
+    /* ─── stack list ────────────────────────────────────── */
+    .stack {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-top: 40px;
+    }
+    @media (max-width: 720px) { .stack { grid-template-columns: repeat(2, 1fr); } }
+    .stack-item {
+      padding: 18px;
+      border: 1px solid var(--rule);
+      border-radius: 14px;
+      background: var(--surface);
+    }
+    .stack-item .name {
+      font-weight: 600;
+      font-size: 14px;
+      margin-bottom: 4px;
+    }
+    .stack-item .role {
+      color: var(--ink-faint);
+      font-size: 13px;
+    }
+
+    /* ─── footer ────────────────────────────────────────── */
+    footer {
+      padding: 48px 0 64px;
+      border-top: 1px solid var(--rule);
+      color: var(--ink-faint);
+      font-size: 14px;
+    }
+    footer .wrap {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+    footer a:hover { color: var(--ink); }
+    footer .links { display: flex; gap: 24px; }
+
+    /* ─── icons ────────────────────────────────────────── */
+    .icon { width: 22px; height: 22px; stroke-width: 1.6; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
+
+    /* ─── signup form (hero) ───────────────────────────── */
+    .signup-form {
+      display: flex;
+      gap: 12px;
+      max-width: 480px;
+      margin: 0 0 8px;
+      flex-wrap: wrap;
+    }
+    .signup-form input[type=email] {
+      flex: 1 1 220px;
+      min-width: 0;
+      padding: 12px 18px;
+      border: 1px solid var(--rule);
+      border-radius: 999px;
+      background: var(--surface);
+      font-family: inherit;
+      font-size: 15px;
+      color: var(--ink);
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .signup-form input[type=email]:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 4px var(--accent-soft);
+    }
+    .signup-form button {
+      cursor: pointer;
+      border: none;
+      font-family: inherit;
+    }
+    .signup-form select {
+      flex: 1 1 100%;
+      padding: 12px 40px 12px 18px;
+      border: 1px solid var(--rule);
+      border-radius: 999px;
+      background-color: var(--surface);
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23807d74' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 18px center;
+      font-family: inherit;
+      font-size: 14.5px;
+      color: var(--ink);
+      appearance: none;
+      -webkit-appearance: none;
+      cursor: pointer;
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .signup-form select:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 4px var(--accent-soft);
+    }
+    .signup-form select:has(option[value=""]:checked) {
+      color: var(--ink-faint);
+    }
+    .signup-msg {
+      font-size: 14px;
+      color: var(--ink-soft);
+      min-height: 20px;
+      margin: 4px 0 0;
+    }
+    .signup-msg.error { color: #b91c1c; }
+    .signup-msg.success { color: #15803d; }
+    .hero-fineprint {
+      margin: 6px 0 0;
+      font-size: 14px;
+      color: var(--ink-faint);
+    }
+    .hero-fineprint a {
+      color: var(--accent);
+      border-bottom: 1px solid transparent;
+      transition: border-color .15s ease;
+    }
+    .hero-fineprint a:hover { border-bottom-color: var(--accent); }
+  </style>
+</head>
+<body>
+
+<nav id="nav">
+  <div class="wrap">
+    <a href="#" class="brand">
+      <span class="brand-mark">R</span>
+      <span>Rosey</span>
+    </a>
+    <div class="nav-links">
+      <a href="#how">How it works</a>
+      <a href="#deep">Under the hood</a>
+      <a href="#selfhost">Self-host</a>
+      <a class="nav-cta" href="https://github.com/atandon1994/rosey" target="_blank" rel="noopener">
+        <svg class="icon" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- ─── hero ─────────────────────────────────────────────── -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span> Self-hosted · open source</span>
+    <h1>A <em>shared assistant</em> for your whole family.</h1>
+    <p class="lede">
+      Rosey remembers the small things your family relies on — the dog's vet,
+      the babysitter's number, pediatrician follow-ups, dad's medication schedule —
+      and she's reachable from the chat apps you already use. Everyone sees
+      the same picture. Self-hosted, so your family's data stays yours.
+    </p>
+    <form id="signup-form" class="signup-form" novalidate
+          action="https://family.us6.list-manage.com/subscribe/post?u=02aa69a2ae1045fa3c6dcedb5&amp;id=f66ef2886d&amp;f_id=008266e0f0"
+          method="post" target="_blank">
+      <label for="signup-famtype" style="position:absolute;left:-9999px;">Who's in your family?</label>
+      <select id="signup-famtype" name="MMERGE7">
+        <option value="">Who's in your family? (optional)</option>
+        <option value="Just me">Just me</option>
+        <option value="Just my partner and me">Just my partner and me</option>
+        <option value="Parents with kids at home">Parents with kids at home</option>
+        <option value="Supporting older parents or relatives">Supporting older parents or relatives</option>
+        <option value="Something else">Something else</option>
+      </select>
+      <label for="signup-email" style="position:absolute;left:-9999px;">Email address</label>
+      <input id="signup-email" type="email" name="EMAIL" placeholder="you@example.com" required autocomplete="email" />
+      <!-- honeypot -->
+      <div aria-hidden="true" style="position:absolute;left:-5000px;">
+        <input type="text" name="b_02aa69a2ae1045fa3c6dcedb5_f66ef2886d" tabindex="-1" value="" />
+      </div>
+      <button type="submit" class="btn btn-primary">
+        Get started
+        <svg class="icon" viewBox="0 0 24 24" style="width:16px;height:16px"><path d="M5 12h14M13 5l7 7-7 7"/></svg>
+      </button>
+    </form>
+    <p id="signup-msg" class="signup-msg" role="status" aria-live="polite"></p>
+    <p class="hero-fineprint">Get the full setup walkthrough by email, plus the occasional note when Rosey grows. Or <a href="#how">see how it works</a> first.</p>
+
+    <div class="chat-preview">
+      <div class="device">
+        <div class="device-head">
+          <span class="who">Ankit</span>
+          <span class="pill pill-tg">Telegram</span>
+        </div>
+        <div class="msg you"><div class="bubble">Rosey, remind me to call Maya's preschool tomorrow at 9am</div></div>
+        <div class="msg them"><div class="bubble">Got it — tomorrow at 9:00 AM I'll nudge you about calling Maya's preschool.</div></div>
+        <div class="msg you"><div class="bubble">also what's the dog's vet number again</div></div>
+        <div class="msg them"><div class="bubble">Pawsitive Care — (415) 555-0142.</div></div>
+      </div>
+      <div class="device">
+        <div class="device-head">
+          <span class="who">Sunanda</span>
+          <span class="pill pill-wa">WhatsApp</span>
+        </div>
+        <div class="msg you"><div class="bubble">hey rosey did ankit add a vet number?</div></div>
+        <div class="msg them"><div class="bubble">Yes — Pawsitive Care, (415) 555-0142. Ankit added it about 30 seconds ago.</div></div>
+        <div class="msg you"><div class="bubble">remind us both to refill mishka's flea meds next sunday</div></div>
+        <div class="msg them"><div class="bubble">Done. Sunday at 9 AM I'll ping you and Ankit about Mishka's flea meds.</div></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ─── what it does ─────────────────────────────────────── -->
+<section id="how" class="tinted">
+  <div class="wrap">
+    <div class="section-eyebrow">What it does</div>
+    <h2>One brain your family <em>actually shares</em>.</h2>
+    <p class="section-lede">
+      Most family logistics live in someone's head, a sticky note on the fridge,
+      or one spouse's phone. Rosey is the third place — a small, addressable
+      memory that takes text from any of you and answers from the same source.
+    </p>
+
+    <div class="features">
+      <div class="feature">
+        <div class="feature-icon">
+          <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+        </div>
+        <h3>Reminders that don't get lost</h3>
+        <p>Text "remind us about the dishwasher repair tuesday at 2." Rosey schedules it, fires it on time, and chases until someone acknowledges.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <h3>Shared facts, addressable</h3>
+        <p>Vet numbers, babysitter rates, mom's pill schedule, the wifi password, the cat's meds. Whoever asks gets the same answer — no "did you write that down somewhere?"</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </div>
+        <h3>Knows who's who</h3>
+        <p>A roster file maps people to phones. "@Ankit, the trash" reaches him on whichever channel he's on. No more cc'ing the family group.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+        </div>
+        <h3>Works on the channels you use</h3>
+        <p>Telegram and WhatsApp today. Alexa and SMS in progress. Same Rosey, same memory — pick the channel that suits each person, whether that's a parent on Telegram, a teen on WhatsApp, or grandma on the kitchen speaker.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        </div>
+        <h3>Group chat aware</h3>
+        <p>Add Rosey to your family WhatsApp group. She replies in-thread when addressed and stays quiet when she shouldn't butt in.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <h3>Yours, not ours</h3>
+        <p>Self-hosted on your Fly.io account. Your memory file lives in your storage. We can't see it. There is no SaaS to discontinue.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── transcript demo ──────────────────────────────────── -->
+<section>
+  <div class="wrap" style="text-align:center;">
+    <div class="section-eyebrow">A real exchange</div>
+    <h2 style="margin-left:auto;margin-right:auto;">What a Tuesday <em>actually</em> looks like.</h2>
+    <p class="section-lede" style="margin-left:auto;margin-right:auto;">
+      Two people, two channels, one shared mind. Ankit on Telegram in the
+      morning; Sunanda on WhatsApp from her commute. Rosey threads them.
+    </p>
+
+    <div class="transcript" style="text-align:left;">
+      <div class="transcript-line">
+        <div class="who"><span class="name">Ankit</span><span class="channel">Telegram · 7:42 AM</span></div>
+        <div class="what">Rosey, Maya has a snow day today, can you remind Sunanda to grab snacks on her way home</div>
+      </div>
+      <div class="transcript-line rosey">
+        <div class="who"><span class="name">Rosey</span><span class="channel">Telegram</span></div>
+        <div class="what">Got it. I'll ping Sunanda at 5:30 PM about grabbing snacks. <em>(scheduled · fires on WhatsApp)</em></div>
+      </div>
+      <div class="transcript-line">
+        <div class="who"><span class="name">Sunanda</span><span class="channel">WhatsApp · 11:14 AM</span></div>
+        <div class="what">rosey what was that thing ankit said about today</div>
+      </div>
+      <div class="transcript-line rosey">
+        <div class="who"><span class="name">Rosey</span><span class="channel">WhatsApp</span></div>
+        <div class="what">Maya has a snow day. Ankit asked me to remind you to grab snacks on your way home — I have that scheduled for 5:30.</div>
+      </div>
+      <div class="transcript-line">
+        <div class="who"><span class="name">Rosey</span><span class="channel">WhatsApp · 5:30 PM</span></div>
+        <div class="what">Hey Sunanda — heads up about snacks for Maya on the way home.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── architecture ─────────────────────────────────────── -->
+<section id="arch" class="tinted">
+  <div class="wrap">
+    <div class="section-eyebrow">How it works</div>
+    <h2>One process. <em>Three doors</em>. One memory.</h2>
+    <p class="section-lede">
+      Every channel hands off to the same agent loop. The agent reads a roster,
+      writes to a shared memory file, and schedules anything time-shaped onto a
+      persistent job queue. Replies fan back out to whichever channel makes sense.
+    </p>
+
+    <div class="arch">
+      <div class="arch-svg-wrap">
+        <svg viewBox="0 0 920 420" xmlns="http://www.w3.org/2000/svg">
+          <!-- channels (left column) -->
+          <g>
+            <rect class="box" x="20" y="40" width="170" height="60" rx="12"/>
+            <text x="40" y="68" class="label-tag">Telegram</text>
+            <text x="40" y="86" class="label-faint">webhook · /telegram</text>
+
+            <rect class="box" x="20" y="130" width="170" height="60" rx="12"/>
+            <text x="40" y="158" class="label-tag">WhatsApp · Cloud API</text>
+            <text x="40" y="176" class="label-faint">webhook · /whatsapp</text>
+
+            <rect class="box" x="20" y="220" width="170" height="60" rx="12"/>
+            <text x="40" y="248" class="label-tag">WhatsApp · Groups</text>
+            <text x="40" y="266" class="label-faint">Baileys sidecar · /whatsapp-baileys</text>
+
+            <rect class="box" x="20" y="310" width="170" height="60" rx="12"/>
+            <text x="40" y="338" class="label-tag">Alexa</text>
+            <text x="40" y="356" class="label-faint">skill · /alexa</text>
+          </g>
+
+          <!-- arrows in -->
+          <g>
+            <path class="flow" d="M190 70 C 240 70, 250 200, 320 200" />
+            <path class="flow" d="M190 160 C 240 160, 250 200, 320 200" />
+            <path class="flow" d="M190 250 C 240 250, 250 210, 320 200" />
+            <path class="flow" d="M190 340 C 240 340, 250 220, 320 200" />
+          </g>
+
+          <!-- agent core -->
+          <rect class="box-accent" x="320" y="150" width="220" height="110" rx="14"/>
+          <text x="345" y="185" class="label-tag" style="fill:var(--accent);font-size:14px;">Agent loop</text>
+          <text x="345" y="207" class="label-faint">Claude · tool-use over a small set</text>
+          <text x="345" y="225" class="label-faint">of family-shaped tools.</text>
+          <text x="345" y="247" class="label-faint">Roster-aware. Self-quiet in groups.</text>
+
+          <!-- arrows out to memory & scheduler -->
+          <g>
+            <path class="flow" d="M540 175 C 620 175, 640 90, 720 90" />
+            <path class="flow" d="M540 235 C 620 235, 640 320, 720 320" />
+          </g>
+
+          <!-- memory & scheduler boxes -->
+          <rect class="box" x="720" y="55" width="180" height="80" rx="12"/>
+          <text x="740" y="84" class="label-tag">Shared memory</text>
+          <text x="740" y="104" class="label-faint">household.md + memory.md</text>
+          <text x="740" y="122" class="label-faint">single source of truth</text>
+
+          <rect class="box" x="720" y="285" width="180" height="80" rx="12"/>
+          <text x="740" y="314" class="label-tag">Persistent scheduler</text>
+          <text x="740" y="334" class="label-faint">APScheduler + SQLite jobstore</text>
+          <text x="740" y="352" class="label-faint">fire · escalate · miss</text>
+
+          <!-- back arrow: scheduler → channels (fan-out) -->
+          <path class="flow" d="M810 285 C 810 200, 600 110, 540 200" stroke-dasharray="3 4"/>
+          <text x="540" y="120" class="label-faint" style="font-size:11px;">scheduled fires fan back to any channel</text>
+        </svg>
+      </div>
+    </div>
+
+    <div class="stack">
+      <div class="stack-item"><div class="name">Python · Quart</div><div class="role">async webhook server</div></div>
+      <div class="stack-item"><div class="name">Anthropic Claude</div><div class="role">agent reasoning</div></div>
+      <div class="stack-item"><div class="name">APScheduler</div><div class="role">persistent reminders</div></div>
+      <div class="stack-item"><div class="name">Node · Baileys</div><div class="role">WhatsApp groups sidecar</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── deep dive ───────────────────────────────────────── -->
+<section id="deep">
+  <div class="wrap">
+    <div class="section-eyebrow">Under the hood</div>
+    <h2>Boring choices in <em>service of reliability</em>.</h2>
+    <p class="section-lede">
+      Reminders are load-bearing for a family. Group chat ergonomics are
+      load-bearing for adoption. The architecture optimizes for both, and not
+      much else.
+    </p>
+
+    <div class="deep">
+      <div>
+        <div class="deep-item">
+          <h3><span class="num">01</span> Channels are independent</h3>
+          <p>Each channel is a thin webhook adapter that converts to a canonical identifier (<code>tg:</code>, <code>wa:</code>, <code>alexa:</code>) and hands off. WhatsApp going down doesn't take Telegram with it — including the reminder fan-out.</p>
+        </div>
+        <div class="deep-item">
+          <h3><span class="num">02</span> Roster maps people, not devices</h3>
+          <p>One markdown file lists each person's channel identifiers. <code>@Ankit</code> in a reminder body resolves to every channel he's on, in parallel. New phone? Edit one line.</p>
+        </div>
+        <div class="deep-item">
+          <h3><span class="num">03</span> Reminders survive restarts</h3>
+          <p>APScheduler with a SQLite jobstore on a Fly volume. Each reminder is three jobs: <em>fire</em>, <em>escalate</em>, <em>miss</em>. The container can crash mid-schedule and reconcile picks up where it left off.</p>
+        </div>
+        <div class="deep-item">
+          <h3><span class="num">04</span> Group chat without the noise</h3>
+          <p>A fuzzy gate runs before the agent in groups: only addressed messages get a reply. Rosey doesn't interrupt; she answers when summoned.</p>
+        </div>
+        <div class="deep-item">
+          <h3><span class="num">05</span> WhatsApp groups via Baileys</h3>
+          <p>Meta's Cloud API can't reach groups without "Official Business Account" status — gated behind well-known brand verification. A Node sidecar runs the MultiDevice protocol directly so families can add Rosey to their group chat today.</p>
+        </div>
+      </div>
+
+      <div>
+        <div class="code">
+          <div class="code-head">
+            <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+            <span>household.md</span>
+            <span></span>
+          </div>
+          <div class="code-body"><span class="c-c"># Family</span>
+- **Ankit** — tg:8600355980, wa:+15048755536
+- **Sunanda** — wa:+15049991122
+- **Maya** — <span class="c-c">(too young for a phone)</span>
+
+<span class="c-c"># Pets</span>
+- Mishka, dog, beagle mix, vet: Pawsitive Care (415) 555-0142
+
+<span class="c-c"># Sitters</span>
+- Priya — wa:+14155552288, $22/hr, prefers texts</div>
+        </div>
+
+        <div class="code" style="margin-top:24px;">
+          <div class="code-head">
+            <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+            <span>scheduler.py · the reminder lifecycle</span>
+            <span></span>
+          </div>
+          <div class="code-body"><span class="c-k">def</span> <span class="c-d">schedule_reminder</span>(text, when, recipients):
+    <span class="c-c"># 3 jobs, one row each, persisted to SQLite</span>
+    fire     = trigger(when)
+    escalate = trigger(when + <span class="c-s">"+10m"</span>)
+    miss     = trigger(when + <span class="c-s">"+1h"</span>)
+
+    <span class="c-k">for</span> r <span class="c-k">in</span> recipients:
+        store.add(<span class="c-s">"fire"</span>,     fire,     r, text)
+        store.add(<span class="c-s">"escalate"</span>, escalate, r, text)
+        store.add(<span class="c-s">"miss"</span>,     miss,     r, text)
+
+<span class="c-c"># on boot:</span>
+<span class="c-k">def</span> <span class="c-d">reconcile</span>():
+    <span class="c-c"># re-attach jobs that should still fire,</span>
+    <span class="c-c"># skip ones already acknowledged.</span>
+    ...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── self-host ─────────────────────────────────────── -->
+<section id="selfhost">
+  <div class="wrap">
+    <div class="selfhost">
+      <div class="section-eyebrow" style="color:#f5b27a;">Run it yourself</div>
+      <h2>Your house, <em>your stack</em>.</h2>
+      <p>
+        Rosey is a single Python repo, one Dockerfile, one Fly app. About an hour
+        end-to-end if you've shipped a webhook before. Telegram is the easiest
+        starting channel — WhatsApp and Alexa are bolt-ons.
+      </p>
+      <p>
+        Costs are two line items: ~$5/mo for the Fly.io VM
+        (or $0 if you run her on a Raspberry Pi or home server),
+        plus $5–15/mo of Anthropic API usage for a typical family. Roughly $10–20/mo all in.
+        <a href="https://www.anthropic.com/pricing" target="_blank" rel="noopener" style="color:#f5b27a;text-decoration:underline;">Current API rates</a>.
+      </p>
+
+      <div class="install-strip">
+        <span>git clone https://github.com/atandon1994/rosey.git &amp;&amp; cd rosey &amp;&amp; fly launch</span>
+        <button onclick="navigator.clipboard.writeText('git clone https://github.com/atandon1994/rosey.git && cd rosey && fly launch'); this.textContent='Copied'; setTimeout(()=>this.textContent='Copy',1600)">Copy</button>
+      </div>
+
+      <div class="selfhost-ctas">
+        <a class="btn btn-primary" href="https://github.com/atandon1994/rosey" target="_blank" rel="noopener">
+          <svg class="icon" viewBox="0 0 24 24" style="width:16px;height:16px"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
+          View on GitHub
+        </a>
+        <a class="btn btn-secondary" href="https://github.com/atandon1994/rosey#readme" target="_blank" rel="noopener">Read the setup guide</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div>Rosey is open source · MIT</div>
+    <div class="links">
+      <a href="https://github.com/atandon1994/rosey" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/atandon1994/rosey/issues" target="_blank" rel="noopener">Issues</a>
+      <a href="https://github.com/atandon1994/rosey#readme" target="_blank" rel="noopener">Docs</a>
+      <a href="mailto:hello@rosey.family">Contact</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // sticky-nav border on scroll
+  const nav = document.getElementById('nav');
+  const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 8);
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+
+  // smooth scroll for in-page anchors
+  document.querySelectorAll('a[href^="#"]').forEach(a => {
+    a.addEventListener('click', e => {
+      const id = a.getAttribute('href');
+      if (id.length > 1) {
+        const el = document.querySelector(id);
+        if (el) { e.preventDefault(); el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+      }
+    });
+  });
+
+  // mailchimp signup — JSONP submit, inline success/error.
+  // falls back to standard form POST (target=_blank) if JS fails.
+  (function () {
+    const form = document.getElementById('signup-form');
+    const msg = document.getElementById('signup-msg');
+    if (!form || !msg) return;
+    form.addEventListener('submit', function (e) {
+      const emailInput = form.querySelector('input[name=EMAIL]');
+      const honeypot = form.querySelector('input[name^="b_"]');
+      const email = (emailInput && emailInput.value || '').trim();
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return; // let browser validation handle it
+      e.preventDefault();
+      msg.className = 'signup-msg';
+      msg.textContent = 'Sending…';
+      const cb = 'mcjsonp_' + Date.now();
+      window[cb] = function (data) {
+        try { delete window[cb]; } catch (_) { window[cb] = undefined; }
+        if (data && data.result === 'success') {
+          msg.className = 'signup-msg success';
+          msg.textContent = "You're in. Check your inbox for a confirmation.";
+          form.reset();
+        } else {
+          msg.className = 'signup-msg error';
+          const txt = (data && data.msg ? String(data.msg) : 'Something went wrong. Try again?')
+            .replace(/<[^>]+>/g, '');
+          msg.textContent = txt;
+        }
+      };
+      const famtype = form.querySelector('select[name=MMERGE7]');
+      const famtypeVal = famtype && famtype.value ? famtype.value : '';
+      const url = 'https://family.us6.list-manage.com/subscribe/post-json'
+        + '?u=02aa69a2ae1045fa3c6dcedb5&id=f66ef2886d&f_id=008266e0f0'
+        + '&EMAIL=' + encodeURIComponent(email)
+        + '&MMERGE7=' + encodeURIComponent(famtypeVal)
+        + '&' + (honeypot ? honeypot.name + '=' + encodeURIComponent(honeypot.value || '') : '')
+        + '&c=' + cb;
+      const s = document.createElement('script');
+      s.src = url;
+      s.async = true;
+      s.onerror = function () {
+        msg.className = 'signup-msg error';
+        msg.textContent = 'Network error. Try again?';
+      };
+      document.body.appendChild(s);
+    });
+  })();
+</script>
+
+</body>
+</html>

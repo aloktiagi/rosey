@@ -1,25 +1,31 @@
-"""Persistent reminder scheduler with three-stage lifecycle.
+"""Persistent reminder scheduler with per-addressee escalation ladders.
 
-Each pending reminder line in /memories/reminders.md gets THREE one-shot
-DateTrigger jobs in the SQLAlchemy-backed jobstore:
+Each pending reminder line in /memories/reminders.md fans out into a
+ladder of one-shot DateTrigger jobs in the SQLAlchemy-backed jobstore:
 
-    fire:<id>      — initial ping at T, sent to the @-named recipients
-    escalate:<id>  — at T + esc, fans out to the originating chat if no ack
-    miss:<id>      — at T + miss, marks the reminder missed if still no ack
+    fire:<task_id>:<addressee_slug>      one per @-mentioned addressee
+                                         (fires to that person's channels)
+    escalate:<task_id>:<addressee_slug>  one per addressee, at T+escalate
+                                         (louder re-ping to same channels)
+    fallback:<task_id>                   one per reminder, at T+fallback
+                                         (pages the dynamically-resolved
+                                          fallback person)
+    miss:<task_id>                       one per reminder, at T+miss
+                                         (terminal log — drop the chase)
 
-The escalation lifecycle is encoded as annotations the line accumulates over
-time (`(fired at ...)`, `(escalated to ...)`, `(acked by ...)`, `(missed at
-...)`). Each job re-reads the line at fire time and self-skips if a later
-state is already present, so we don't need explicit job cancellation on
-ack — robust to crashes, file edits, and out-of-order delivery.
+The whole lifecycle is encoded as annotations the line accumulates over
+time (`(fired at …)`, `(escalated to X …)`, `(fallback to Y …)`, `(acked
+by Z …)`, `(missed at …)`). Each downstream job re-reads the line at
+fire time and self-skips if `(acked` is present, so a single ack on the
+line cancels every pending job across every addressee's ladder. Robust
+to crashes, file edits, and out-of-order delivery — no explicit job
+cancellation needed.
 
-Default cadence (used when the agent doesn't specify `esc:` / `miss:` tags
-on the line):
-    esc:  30 minutes after primary fire
-    miss: 24 hours  after primary fire
-
-The agent can override per-task with `esc:5m miss:1h` (urgent), `esc:1d
-miss:7d` (slow burn), etc.
+Urgency tier (`urg:low|normal|high` on the line) picks the interval
+preset; see URGENCY_INTERVALS below for the defaults. Without an explicit
+tier the line is treated as "normal" — escalate at +15m, fallback at
++45m, miss at +2h. Per-line `esc:Nm` / `miss:Nh` tags override the
+preset's escalate / miss horizon.
 
 Public API:
     start()                   start the singleton scheduler (idempotent)
@@ -28,7 +34,7 @@ Public API:
                               startup and after each agent turn that may
                               have written reminders.md
     mark_acked(task_id, by)   record an ack annotation on the matching
-                              line. Future escalate/miss runs self-skip.
+                              line. Every downstream job self-skips on it.
     find_task_by_chat_msg(c,m) look up which task_id (if any) sent the
                               Telegram message at (chat_id, msg_id), used
                               by reply-to-bot ack detection
@@ -60,11 +66,13 @@ from paths import memories_dir
 from reminder_format import (
     ACKED_RE,
     ESC_RE,
+    FB_RE,
     FROM_RE,
     ID_RE,
     LINE_RE,
     MENTION_RE,
     MISS_RE,
+    URG_RE,
 )
 
 log = logging.getLogger("rosey.scheduler")
@@ -76,9 +84,27 @@ _MISSED_HEADER = "## Missed"
 _MALFORMED_HEADER = "## Malformed"
 _FAILED_HEADER = "## Failed_Delivery"
 
-# Default escalation cadences (used when esc:/miss: tags absent).
-DEFAULT_ESCALATE_AFTER = timedelta(minutes=30)
-DEFAULT_MISS_AFTER = timedelta(hours=24)
+# Urgency tier presets — the agent picks one at schedule time and writes
+# `urg:low|normal|high` on the line. Each preset maps to a (escalate,
+# fallback, miss) timedelta triple. A None entry means "skip this tier" —
+# low has no escalate/fallback (it's fire-and-forget; the miss horizon
+# exists only so the line gets logged as missed if untouched).
+#
+# Explicit `esc:Nm` / `miss:Nh` tags on the same line override the
+# corresponding preset entry. Fallback is preset-only (no per-line tag) —
+# if you want fine-grained control, set the urgency.
+URGENCY_INTERVALS: dict[str, dict[str, Optional[timedelta]]] = {
+    "low":    {"escalate": None,                  "fallback": None,                 "miss": timedelta(hours=1)},
+    "normal": {"escalate": timedelta(minutes=15), "fallback": timedelta(minutes=45), "miss": timedelta(hours=2)},
+    "high":   {"escalate": timedelta(minutes=3),  "fallback": timedelta(minutes=10), "miss": timedelta(minutes=30)},
+}
+DEFAULT_URGENCY = "normal"
+
+# Backward-compat: when reconcile sees a line with neither `urg:` nor
+# `esc:`/`miss:`, treat as DEFAULT_URGENCY. These two consts kept so
+# external callers / migrations referencing them don't break.
+DEFAULT_ESCALATE_AFTER = URGENCY_INTERVALS[DEFAULT_URGENCY]["escalate"]
+DEFAULT_MISS_AFTER = URGENCY_INTERVALS[DEFAULT_URGENCY]["miss"]
 
 # Module-level singleton scheduler.
 _scheduler: BackgroundScheduler | None = None
@@ -181,6 +207,91 @@ def _format_assignee_html(assignees) -> str:
         else:
             parts.append(f"@{safe_name}")
     return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Fallback resolution — runs at fallback-fire time, not at schedule time,
+# so roster edits between scheduling and firing take effect.
+# ---------------------------------------------------------------------------
+
+def _slug_for_addressee(name: str) -> str:
+    """Stable lowercase slug for use in APScheduler job IDs. Strips
+    everything that isn't alphanumeric so `fire:<task_id>:<slug>` stays
+    a clean opaque key.
+    """
+    return re.sub(r"[^a-z0-9]", "", name.lower()) or "anon"
+
+
+def _resolve_fallback_recipient(
+    raw_message: str, origin_chat: str,
+) -> tuple[str, list[str]]:
+    """Return (fallback_name, list_of_identifiers) for the fallback tier.
+
+    Resolution order, most specific first:
+      1. explicit `fb:Name` tag on the line
+      2. another @-mentioned person on the line who isn't an addressee
+         (i.e. someone the agent surfaced as a co-witness)
+      3. owner of the `from:` chat if a different person from any addressee
+      4. next member of household.md, in roster order, excluding addressees
+      5. ("", []) — nothing, fallback tier silently skips
+
+    The "addressees" set is the @-mentioned people on the line; the
+    fallback by definition is not one of them.
+    """
+    addressee_names = [n.lower() for n in MENTION_RE.findall(raw_message)]
+
+    # Group roster by name → all idents.
+    grouped: dict[str, list[str]] = {}
+    canonical: dict[str, str] = {}
+    for m in roster.members():
+        grouped.setdefault(m.name.lower(), []).append(m.identifier)
+        canonical.setdefault(m.name.lower(), m.name)
+
+    def _idents_for(name_lower: str) -> tuple[str, list[str]]:
+        idents = grouped.get(name_lower, [])
+        return canonical.get(name_lower, name_lower), idents
+
+    # 1. explicit fb: tag
+    fb_match = FB_RE.search(raw_message)
+    if fb_match:
+        name, idents = _idents_for(fb_match.group(1).lower())
+        if idents:
+            return name, idents
+        # explicit fb: that doesn't resolve in roster — log and fall through
+        log.info(
+            "fallback resolve: explicit fb:%s didn't resolve in household.md, "
+            "falling through to dynamic resolution",
+            fb_match.group(1),
+        )
+
+    # 2. another @-mentioned non-addressee
+    # (Reminders rarely have non-addressee @-mentions, but if the agent
+    # writes "@Ankit (and @Sunanda will know if anything)", Sunanda
+    # qualifies.)
+    # Skipping for now since MENTION_RE doesn't distinguish addressees
+    # from co-witnesses — the convention is all @-mentions are addressees.
+    # If/when the agent starts marking co-witnesses differently, slot in here.
+
+    # 3. owner of from: chat if different from addressees
+    if origin_chat:
+        for m in roster.members():
+            if m.identifier == origin_chat and m.name.lower() not in addressee_names:
+                # If this person has multiple identifiers, fan to all.
+                name, idents = _idents_for(m.name.lower())
+                if idents:
+                    return name, idents
+
+    # 4. next household member by roster order, excluding addressees
+    for m in roster.members():
+        lower = m.name.lower()
+        if lower in addressee_names:
+            continue
+        name, idents = _idents_for(lower)
+        if idents:
+            return name, idents
+
+    # 5. nothing
+    return "", []
 
 
 # ---------------------------------------------------------------------------
@@ -418,9 +529,24 @@ def escalate_one(
     raw_message: str,
     origin_chat: str,
     assignee_names: list[str] | None = None,
+    *,
+    addressee_name: str | None = None,
+    addressee_idents: list[str] | None = None,
 ) -> None:
-    """If the task hasn't been acked yet, escalate to the originating
-    chat (group). Self-skip if already acked or already escalated.
+    """If the task hasn't been acked yet, re-ping a specific addressee on
+    every channel they're on (louder phrasing this time). Per-addressee:
+    one escalate job per @-named person, each fanning to that person's
+    own identifiers.
+
+    Self-skips if the line is already acked OR if this addressee has
+    already been escalated (multiple addressees each have their own
+    escalation; the line-level "(acked …)" annotation kills them all
+    when any addressee acks).
+
+    Backwards-compat: if `addressee_idents` is omitted (legacy job entries
+    persisted before this refactor), falls back to sending to `origin_chat`
+    so old jobs in the SQLite jobstore still deliver something on first
+    fire after deploy. Reconcile orphans them on the next pass.
     """
     state = _read_task_state(task_id)
     if state is None:
@@ -430,24 +556,119 @@ def escalate_one(
         log.info("escalate_one task=%s: already %s, noop",
                  task_id, "acked" if state["acked"] else "missed")
         return
-    if state["escalated"]:
-        log.info("escalate_one task=%s: already escalated, noop", task_id)
+
+    # Per-addressee escalation marker — distinct from the legacy global
+    # "(escalated …)" check so multi-addressee reminders don't have one
+    # addressee's escalation suppress the other's.
+    if addressee_name and f"escalated to {addressee_name}" in state["line"]:
+        log.info(
+            "escalate_one task=%s addressee=%s: already escalated, noop",
+            task_id, addressee_name,
+        )
+        return
+
+    targets = list(addressee_idents) if addressee_idents else [origin_chat]
+    body_text = html.escape(_strip_to_user_message(raw_message))
+    mention_html = _format_assignee_html(assignee_names)
+    name_phrase = f" for {mention_html}" if mention_html else ""
+    body = (
+        f"⏰ Still pending{name_phrase} — please ack: {body_text}"
+    )
+
+    sent_pairs: list[tuple[str, int]] = []
+    for ident in targets:
+        msg_id = channels.send_returning_msg_id(ident, body, parse_mode="HTML")
+        if msg_id is not None:
+            sent_pairs.append((ident, msg_id))
+
+    if not sent_pairs:
+        log.warning("escalate_one task=%s addressee=%s: no successful sends",
+                    task_id, addressee_name)
+        return
+
+    log.info(
+        "escalate_one task=%s addressee=%s sent_to=%s",
+        task_id, addressee_name, [p[0] for p in sent_pairs],
+    )
+
+    msg_pairs_str = " ".join(f"chat:{ident} msg:{mid}" for ident, mid in sent_pairs)
+    name_tag = f"to {addressee_name} " if addressee_name else ""
+    annotation = f"(escalated {name_tag}{msg_pairs_str} at {_now_str()})"
+    _append_annotation(task_id, annotation)
+
+
+def fallback_one(
+    task_id: str,
+    ts_str: str,
+    raw_message: str,
+    origin_chat: str,
+    assignee_names: list[str] | None = None,
+) -> None:
+    """Page the fallback person if no addressee has acked by the fallback
+    horizon. Resolution happens at fire time (not at schedule time) so the
+    fallback adapts to roster edits between scheduling and firing.
+
+    Resolution order (most specific → least):
+      1. explicit `fb:Name` tag on the line
+      2. another @-mentioned person on the line who isn't already an addressee
+      3. the human owner of the `from:` chat if that person isn't an addressee
+      4. next household member by roster order, excluding addressees
+      5. nothing — silently skip the fallback tier (logged for debugging)
+
+    The actual page goes to ALL of that person's channels, with phrasing
+    that says "X hasn't acked Y — can you take it?".
+    """
+    state = _read_task_state(task_id)
+    if state is None:
+        return
+    if state["acked"] or state["missed"]:
+        log.info("fallback_one task=%s: already %s, noop",
+                 task_id, "acked" if state["acked"] else "missed")
+        return
+
+    fallback_name, fallback_idents = _resolve_fallback_recipient(raw_message, origin_chat)
+    if not fallback_idents:
+        log.info(
+            "fallback_one task=%s: no resolvable fallback person, skipping tier",
+            task_id,
+        )
         return
 
     body_text = html.escape(_strip_to_user_message(raw_message))
-    mention_html = _format_assignee_html(assignee_names)
-    if mention_html:
-        body = f"⏰ Reminder for {mention_html} (re-ping, no ack yet): {body_text}"
-    else:
-        body = f"⏰ Reminder (re-ping, no ack yet): {body_text}"
+    addressee_phrase = (
+        " ".join(f"@{n}" for n in (assignee_names or []) if isinstance(n, str))
+        or "the person assigned"
+    )
+    # `assignee_names` may also be a list of (name, chat_id) tuples per the
+    # display contract — pull the names back out for the plain-text phrase.
+    if assignee_names and not all(isinstance(n, str) for n in assignee_names):
+        addressee_phrase = " ".join(
+            f"@{e[0]}" for e in assignee_names
+            if isinstance(e, (list, tuple)) and e and e[0]
+        ) or addressee_phrase
+    body = (
+        f"⏰ Heads up {fallback_name} — {addressee_phrase} hasn't acked: "
+        f"{body_text}. Can you take it or nudge them?"
+    )
 
-    msg_id = channels.send_returning_msg_id(origin_chat, body, parse_mode="HTML")
-    if msg_id is None:
-        log.warning("escalate_one task=%s: send to %s failed", task_id, origin_chat)
+    sent_pairs: list[tuple[str, int]] = []
+    for ident in fallback_idents:
+        msg_id = channels.send_returning_msg_id(ident, body, parse_mode="HTML")
+        if msg_id is not None:
+            sent_pairs.append((ident, msg_id))
+
+    if not sent_pairs:
+        log.warning("fallback_one task=%s: send to %s failed",
+                    task_id, fallback_idents)
         return
 
-    log.info("escalate_one task=%s sent_to=%s msg=%s", task_id, origin_chat, msg_id)
-    annotation = f"(escalated to chat:{origin_chat} msg:{msg_id} at {_now_str()})"
+    log.info(
+        "fallback_one task=%s fallback_to=%s sent_to=%s",
+        task_id, fallback_name, [p[0] for p in sent_pairs],
+    )
+
+    msg_pairs_str = " ".join(f"chat:{ident} msg:{mid}" for ident, mid in sent_pairs)
+    annotation = f"(fallback to {fallback_name} {msg_pairs_str} at {_now_str()})"
     _append_annotation(task_id, annotation)
 
 
@@ -507,6 +728,91 @@ def find_task_by_chat_msg(chat_id: str, msg_id: int) -> Optional[str]:
             if ids:
                 return ids[0]
     return None
+
+
+def recent_fires_for(identifier: str, within_minutes: int = 10) -> list[dict]:
+    """Reminders that fired to `identifier` (e.g. "tg:8600355980", or a
+    "wa:+155…" ident) within the last `within_minutes`, that are still
+    un-acked. Returned as a list of dicts ordered most-recent first:
+
+        [
+          { "task_id": "abc123", "fired_at": "2026-05-10 14:32",
+            "msg_id": "1234", "summary": "pick up baby from daycare" },
+          ...
+        ]
+
+    Used by the agent to disambiguate casual "ok" / "yep" / "got it"
+    replies — when the user sends one of those within minutes of
+    receiving a reminder, this gives the agent the exact line to ack
+    instead of guessing.
+
+    Reads reminders.md only (no scheduler state). Lines that have an
+    `(acked …)` annotation OR that are in the ## Missed section are
+    excluded — there's nothing left to ack on those.
+    """
+    path = memories_dir() / "reminders.md"
+    if not path.exists():
+        return []
+
+    tz = _local_tz()
+    now = datetime.now(tz=tz)
+    horizon = now - timedelta(minutes=within_minutes)
+
+    out: list[dict] = []
+    sections = _split_sections(path.read_text(encoding="utf-8"))
+    # Look in head + fired sections — both can have un-acked reminders
+    # whose fire annotation matches. Skip ## Missed entirely.
+    for section_name in ("head", "fired"):
+        for line in sections[section_name].splitlines():
+            if not line.lstrip().startswith("- "):
+                continue
+            if ACKED_RE.search(line):
+                continue
+            ids = ID_RE.findall(line)
+            if not ids:
+                continue
+            task_id = ids[0]
+
+            # Each fire/escalate annotation may contain multiple
+            # `chat:<ident> msg:<n>` pairs. We want any pair where
+            # the chat matches `identifier`.
+            #   "(fired at 2026-05-10 14:32 chat:tg:8600 msg:1234 chat:wa:+1… msg:5678)"
+            # Simple regex extraction over each parenthetical:
+            for paren in re.finditer(r"\(([^)]+)\)", line):
+                blob = paren.group(1)
+                if not (blob.startswith("fired at ") or blob.startswith("escalated ")):
+                    continue
+                # Pull out the timestamp (first "YYYY-MM-DD HH:MM" in blob).
+                ts_m = re.search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2})", blob)
+                if not ts_m:
+                    continue
+                try:
+                    fired_at = datetime.strptime(ts_m.group(1), "%Y-%m-%d %H:%M")
+                    if tz is not None:
+                        fired_at = fired_at.replace(tzinfo=tz)
+                except ValueError:
+                    continue
+                if fired_at < horizon:
+                    continue
+                # Find a chat:<identifier> msg:<n> pair that matches.
+                # Identifiers may be `tg:NNN`, `wa:+NNN`, `wa:group:JID`, etc.
+                for chat_m in re.finditer(
+                    r"chat:(\S+)\s+msg:(\d+)", blob,
+                ):
+                    chat_ident = chat_m.group(1)
+                    if chat_ident != identifier:
+                        continue
+                    summary = _strip_to_user_message(line[2:])  # drop leading "- "
+                    out.append({
+                        "task_id": task_id,
+                        "fired_at": ts_m.group(1),
+                        "msg_id": chat_m.group(2),
+                        "summary": summary[:120],
+                    })
+                    break  # one match per parenthetical is enough
+    # Most recent first.
+    out.sort(key=lambda r: r["fired_at"], reverse=True)
+    return out
 
 
 def _read_task_state(task_id: str) -> Optional[dict]:
@@ -717,34 +1023,58 @@ def reconcile() -> None:
             assignees.append((display_name, chat_id_str))
         from_chats = FROM_RE.findall(msg)
 
-        # Fan out: a single @-mention resolves to ALL of that person's
-        # identifiers (tg + wa + alexa, whatever they have listed). That
-        # way Ankit gets the reminder on Telegram AND WhatsApp, not just
-        # whichever channel happened to be listed first.
+        # Build per-addressee chains. Each entry is (display_name,
+        # [their_idents]) — the unit that gets its own fire+escalate
+        # ladder. Ack on the line cancels every chain (line-level
+        # annotation; self-skip pattern in fire/escalate/fallback/miss).
+        #
+        #   @-mentions present  → one chain per resolved person
+        #   no @-mentions, roster has members → one chain per member
+        #   no @-mentions, no roster → one anonymous chain to from: chat
+        addressee_chains: list[tuple[str, list[str]]] = []
         if mentions:
-            recipients: list[str] = []
             unresolved: list[str] = []
-            for n in mentions:
-                ids_for_name = members_by_name_all.get(n, [])
+            for raw_n in raw_mentions:
+                lower = raw_n.lower()
+                ids_for_name = members_by_name_all.get(lower, [])
                 if ids_for_name:
-                    recipients.extend(ids_for_name)
+                    addressee_chains.append(
+                        (canonical_name.get(lower, raw_n), list(ids_for_name)),
+                    )
                 else:
-                    unresolved.append(n)
-            if not recipients:
+                    unresolved.append(lower)
+            if not addressee_chains:
+                # All @-mentions are unknown — fall back to from: chat.
+                if from_chats:
+                    addressee_chains = [(from_chats[0], [from_chats[0]])]
+                elif all_idents:
+                    # Fan to whole household, one chain per member.
+                    for name_lower, idents in members_by_name_all.items():
+                        addressee_chains.append(
+                            (canonical_name.get(name_lower, name_lower), list(idents)),
+                        )
                 log.warning(
-                    "reconcile: unknown mentions %s, falling back to from:%s or all",
-                    mentions, from_chats,
+                    "reconcile: unknown mentions %s, falling back to %s chains",
+                    mentions, len(addressee_chains),
                 )
-                recipients = list(from_chats) or list(all_idents)
             elif unresolved:
                 log.info(
                     "reconcile: partial mention resolution — known=%s unknown=%s",
                     [n for n in mentions if n not in unresolved], unresolved,
                 )
         else:
-            recipients = list(all_idents) or list(from_chats)
+            # No @-mentions: fan to whole household. Each member gets
+            # their own escalation chain. If household.md is empty, fall
+            # back to a single anonymous chain on the from: chat.
+            if all_idents:
+                for name_lower, idents in members_by_name_all.items():
+                    addressee_chains.append(
+                        (canonical_name.get(name_lower, name_lower), list(idents)),
+                    )
+            elif from_chats:
+                addressee_chains = [(from_chats[0], [from_chats[0]])]
 
-        if not recipients:
+        if not addressee_chains:
             reason = (
                 "no @-mentions resolved and no recipients available "
                 "(household.md is empty and no from: tag)"
@@ -756,34 +1086,36 @@ def reconcile() -> None:
             failed_to_deliver.append((p["task_id"], p["raw_line"], reason))
             continue
 
-        # Pick origin chat: prefer from: tag, else first recipient.
-        origin_chat = from_chats[0] if from_chats else recipients[0]
+        # Pick origin chat: prefer from: tag, else first chain's first ident.
+        origin_chat = from_chats[0] if from_chats else addressee_chains[0][1][0]
 
-        # Per-line cadence overrides.
+        # Urgency tier → (escalate, fallback, miss) preset. `urg:` on the
+        # line picks; default is "normal". Explicit `esc:` / `miss:`
+        # overrides the corresponding preset entry.
+        urg_match = URG_RE.search(msg)
+        urg_tier = urg_match.group(1) if urg_match else DEFAULT_URGENCY
+        intervals = dict(URGENCY_INTERVALS[urg_tier])
+
         esc_match = ESC_RE.search(msg)
         miss_match = MISS_RE.search(msg)
-        try:
-            esc_delta = (
-                _parse_duration(*esc_match.groups()) if esc_match
-                else DEFAULT_ESCALATE_AFTER
-            )
-        except ValueError:
-            esc_delta = DEFAULT_ESCALATE_AFTER
-        try:
-            miss_delta = (
-                _parse_duration(*miss_match.groups()) if miss_match
-                else DEFAULT_MISS_AFTER
-            )
-        except ValueError:
-            miss_delta = DEFAULT_MISS_AFTER
+        if esc_match:
+            try:
+                intervals["escalate"] = _parse_duration(*esc_match.groups())
+            except ValueError:
+                pass
+        if miss_match:
+            try:
+                intervals["miss"] = _parse_duration(*miss_match.groups())
+            except ValueError:
+                pass
 
         desired_jobs[p["task_id"]] = {
             "ts_str": p["ts_str"],
             "raw_message": msg,
-            "recipients": recipients,
+            "addressee_chains": addressee_chains,
             "origin_chat": origin_chat,
-            "esc_delta": esc_delta,
-            "miss_delta": miss_delta,
+            "intervals": intervals,
+            "urg_tier": urg_tier,
             "assignees": assignees,
         }
 
@@ -804,9 +1136,20 @@ def reconcile() -> None:
             truly_new_failed.append((raw_line, reason))
 
     # Sync APScheduler jobstore.
+    #
+    # Job-id shape (post-refactor):
+    #   fire:<task_id>:<addressee_slug>      one per addressee
+    #   escalate:<task_id>:<addressee_slug>  one per addressee (if tier has it)
+    #   fallback:<task_id>                   one per reminder (if tier has it)
+    #   miss:<task_id>                       one per reminder
+    #
+    # Old shape (`fire:<tid>`, `escalate:<tid>`, `miss:<tid>` without slug)
+    # gets cleaned up by the orphan pass below — anything not in
+    # desired_job_ids on the next reconcile pass is removed.
     tz = _local_tz()
     desired_job_ids: set[str] = set()
-    added = 0
+    added_reminders = 0
+    added_jobs = 0
     for tid, info in desired_jobs.items():
         try:
             due = datetime.strptime(info["ts_str"], "%Y-%m-%d %H:%M")
@@ -816,46 +1159,82 @@ def reconcile() -> None:
             log.warning("reconcile: bad timestamp %r — skipping", info["ts_str"])
             continue
 
-        fire_id = f"fire:{tid}"
-        esc_id = f"escalate:{tid}"
-        miss_id = f"miss:{tid}"
-        desired_job_ids.update({fire_id, esc_id, miss_id})
-
         assignees = info.get("assignees") or []
-        sched.add_job(
-            fire_one,
-            trigger=DateTrigger(run_date=due),
-            args=[tid, info["ts_str"], info["raw_message"],
-                  info["recipients"], info["origin_chat"], assignees],
-            id=fire_id,
-            replace_existing=True,
-        )
-        sched.add_job(
-            escalate_one,
-            trigger=DateTrigger(run_date=due + info["esc_delta"]),
-            args=[tid, info["ts_str"], info["raw_message"],
-                  info["origin_chat"], assignees],
-            id=esc_id,
-            replace_existing=True,
-        )
+        chains = info["addressee_chains"]
+        intervals = info["intervals"]
+
+        # Per-addressee chains: fire (always) + escalate (if tier provides one).
+        for addr_name, addr_idents in chains:
+            slug = _slug_for_addressee(addr_name)
+            fire_id = f"fire:{tid}:{slug}"
+            desired_job_ids.add(fire_id)
+            sched.add_job(
+                fire_one,
+                trigger=DateTrigger(run_date=due),
+                args=[tid, info["ts_str"], info["raw_message"],
+                      addr_idents, info["origin_chat"], assignees],
+                id=fire_id,
+                replace_existing=True,
+            )
+            added_jobs += 1
+            if intervals.get("escalate") is not None:
+                esc_id = f"escalate:{tid}:{slug}"
+                desired_job_ids.add(esc_id)
+                sched.add_job(
+                    escalate_one,
+                    trigger=DateTrigger(run_date=due + intervals["escalate"]),
+                    args=[tid, info["ts_str"], info["raw_message"],
+                          info["origin_chat"], assignees],
+                    kwargs={
+                        "addressee_name": addr_name,
+                        "addressee_idents": addr_idents,
+                    },
+                    id=esc_id,
+                    replace_existing=True,
+                )
+                added_jobs += 1
+
+        # Per-reminder fallback: pages a different person if no addressee
+        # has acked. Resolution happens at fire time (in fallback_one) so
+        # roster edits between scheduling and firing take effect.
+        if intervals.get("fallback") is not None:
+            fb_id = f"fallback:{tid}"
+            desired_job_ids.add(fb_id)
+            sched.add_job(
+                fallback_one,
+                trigger=DateTrigger(run_date=due + intervals["fallback"]),
+                args=[tid, info["ts_str"], info["raw_message"],
+                      info["origin_chat"], assignees],
+                id=fb_id,
+                replace_existing=True,
+            )
+            added_jobs += 1
+
+        # Per-reminder miss — terminal log + drop the chase.
+        miss_id = f"miss:{tid}"
+        desired_job_ids.add(miss_id)
         sched.add_job(
             miss_one,
-            trigger=DateTrigger(run_date=due + info["miss_delta"]),
+            trigger=DateTrigger(run_date=due + intervals["miss"]),
             args=[tid, info["ts_str"], info["raw_message"],
                   info["origin_chat"], assignees],
             id=miss_id,
             replace_existing=True,
         )
-        added += 1
+        added_jobs += 1
+        added_reminders += 1
 
-    # Orphans: jobs in store that aren't desired (line edited or removed)
-    # AND legacy "reminder:" prefix jobs from the previous scheduler version.
+    # Orphans: jobs in store that aren't desired (line edited, removed,
+    # or carries a stale job-id shape from before the per-addressee
+    # refactor) AND legacy `reminder:` prefix jobs from the original
+    # scheduler version.
     removed = 0
     for j in sched.get_jobs():
-        if j.id.startswith("reminder:") or (
-            j.id.startswith(("fire:", "escalate:", "miss:"))
-            and j.id not in desired_job_ids
-        ):
+        is_legacy_prefix = j.id.startswith("reminder:")
+        is_lifecycle_prefix = j.id.startswith(
+            ("fire:", "escalate:", "fallback:", "miss:")
+        )
+        if is_legacy_prefix or (is_lifecycle_prefix and j.id not in desired_job_ids):
             try:
                 sched.remove_job(j.id)
                 removed += 1
@@ -886,10 +1265,10 @@ def reconcile() -> None:
             new_failed=truly_new_failed,
         )
 
-    if added or removed:
+    if added_reminders or removed:
         log.info(
-            "reconcile: +%d reminders (×3 jobs each = %d), -%d orphans",
-            added, added * 3, removed,
+            "reconcile: +%d reminders (=%d total jobs across per-addressee chains), -%d orphans",
+            added_reminders, added_jobs, removed,
         )
 
 

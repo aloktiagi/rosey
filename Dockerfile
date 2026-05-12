@@ -4,35 +4,41 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# Install Node.js 20 alongside Python — needed for the Baileys sidecar that
+# handles WhatsApp groups (Cloud API can't reach groups without Official
+# Business Account status, so we run the Baileys MultiDevice protocol
+# client in parallel). curl is used by the official NodeSource setup.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-# Install dependencies first so Docker layer caching reuses this when
-# only Python sources change.
+# Python deps first so Docker layer caching reuses them when only sources change.
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir '.[telegram]'
 
-# Source files. Update this list when adding modules. Avoids COPY * which
-# would also copy .env, .venv, scheduler.db, etc.
+# Node deps for the Baileys sidecar — separate copy step so changing
+# JS source doesn't invalidate the npm-install layer.
+COPY baileys/package.json ./baileys/
+RUN cd baileys && npm install --omit=dev --no-audit --no-fund
+
+# Python sources. Update this list when adding modules. Avoids COPY *
+# which would also copy .env, .venv, scheduler.db, etc.
 COPY agent.py alexa_handler.py app.py channels.py gate.py household.py \
      memory_tool.py paths.py reminder_format.py reminders.py roster.py \
      scheduler.py server.py summary.py telegram_bot.py tools.py transcribe.py \
      whatsapp_handler.py ./
 
+# Baileys source + the wrapper that launches both processes.
+COPY baileys/index.js ./baileys/
+COPY scripts/start.sh ./scripts/
+
 EXPOSE 8080
 
-# Multi-channel HTTP entrypoint. server.py exposes a Quart ASGI app
-# (`asgi_app`) that hosts:
-#   POST /telegram   — Telegram webhook (dispatches to PTB)
-#   POST /alexa      — Alexa skill webhook (dispatches to alexa_handler)
-#   GET  /health     — Fly health check
-#
-# We run via hypercorn so we can host both routes under one port. The
-# previous `python -m telegram_bot` polling/webhook entrypoint is still
-# usable for local dev (no Alexa support there).
-#
-# `--access-logfile - --error-logfile -` send logs to stdout so they
-# fold into `fly logs`.
-CMD ["hypercorn", "server:asgi_app", \
-     "--bind", "0.0.0.0:8080", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-"]
+# Wrapper script launches Python + Baileys side by side. When BAILEYS_MODE
+# is "off" (default), only Python runs; we still ship the Node files in
+# the image so flipping the env var enables groups without rebuilding.
+CMD ["bash", "/app/scripts/start.sh"]
