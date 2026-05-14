@@ -134,10 +134,17 @@ def _send_telegram_message(chat_id: int, text: str) -> bool:
         return False
 
 
-def _process_telegram_and_reply(chat_id: int, text: str) -> None:
+def _process_telegram_and_reply(
+    chat_id: int,
+    text: str,
+    image_b64: str | None = None,
+    image_mime: str | None = None,
+) -> None:
     sender_id = f"tg:{chat_id}"
     try:
-        reply = handle_message(sender_id, text)
+        reply = handle_message(
+            sender_id, text, image_b64=image_b64, image_mime=image_mime,
+        )
     except Exception:
         log.exception("agent failure for %s", sender_id)
         reply = "Something went wrong. Try again in a moment."
@@ -149,7 +156,8 @@ def _process_telegram_and_reply(chat_id: int, text: str) -> None:
 @app.post("/telegram")
 def telegram_inbound() -> Response:
     """Receive a parsed Telegram message forwarded by the router.
-    Expects JSON `{chat_id, text, name?}` with X-Rosey-Internal-Token.
+    Expects JSON `{chat_id, text, name?, image_b64?, image_mime?}` with
+    X-Rosey-Internal-Token.
     """
     if not _request_is_trusted_internal():
         log.warning("telegram: missing/bad internal token")
@@ -158,13 +166,20 @@ def telegram_inbound() -> Response:
     payload = request.get_json(silent=True) or {}
     chat_id = payload.get("chat_id")
     text = (payload.get("text") or "").strip()
-    if not isinstance(chat_id, int) or not text:
+    image_b64 = payload.get("image_b64")
+    image_mime = payload.get("image_mime")
+    if not isinstance(chat_id, int):
+        return Response("", status=200)
+    if not text and not image_b64:
         return Response("", status=200)
 
-    log.info("telegram inbound from=tg:%s len=%d", chat_id, len(text))
+    log.info(
+        "telegram inbound from=tg:%s len=%d photo=%s",
+        chat_id, len(text), "yes" if image_b64 else "no",
+    )
     threading.Thread(
         target=_process_telegram_and_reply,
-        args=(chat_id, text),
+        args=(chat_id, text, image_b64, image_mime),
         daemon=True,
     ).start()
     return Response("", status=200)

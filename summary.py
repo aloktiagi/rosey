@@ -23,12 +23,14 @@ log = logging.getLogger("rosey.summary")
 DIGEST_TASK = (
     "Produce the Saturday morning household digest. "
     "Read whatever is in /memories that's relevant: pending groceries, "
-    "open reminders, anything else worth surfacing. Group by domain "
-    "(Groceries / Reminders / Other), one short line per item. "
-    "If nothing is pending, say so plainly. "
-    "End with a one-line note about the week if anything stands out from "
-    "purchase history or recent threads — otherwise omit. "
-    "Plain text, under 800 characters, suitable for Telegram."
+    "open reminders, the upcoming week from events.md, anything else "
+    "worth surfacing. Group by domain (Week ahead / Groceries / "
+    "Reminders / Other), one short line per item. Under 'Week ahead', "
+    "list the next 7 days of events with date + short description "
+    "(skip @-mentions). If nothing is pending in a section, omit it. "
+    "End with a one-line note about the week if anything stands out — "
+    "otherwise omit. Plain text, under 800 characters, suitable for "
+    "Telegram."
 )
 
 

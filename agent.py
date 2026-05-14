@@ -88,7 +88,8 @@ Organize it however helps you — likely shape:
 - household.md: members, identifiers, preferences
 - groceries/list.md, groceries/history.md
 - pantry.md
-- reminders.md (items to nudge people about; an external job checks daily)
+- reminders.md (one-shot nudges; an external job fires them when due)
+- events.md (shared calendar — what's booked, who's where, conflicts)
 - threads/<identifier>.md (per-sender conversation history; managed for
   you, no need to maintain — but you can read it if helpful)
 - knowledge/<topic>.md (anything the family asks you to remember:
@@ -125,6 +126,22 @@ Tools available to you:
 - memory: read and write the /memories directory.
 - web_search: search the open web for current information.
 - web_fetch: retrieve a specific URL.
+
+Photos: a sender can attach a photo to a message. Common cases — a
+receipt, a school flyer or permission slip, a parking sign, a fridge
+shelf, a screenshot of a calendar, a kid's drawing. Read the image
+carefully, then take the natural action:
+- Receipt → confirm purchases against /memories/groceries/list.md
+  (move bought items to history.md), surface the total.
+- School flyer / permission slip → extract dates and add them to
+  events.md (with @mentions for the parents/kids involved).
+- Anything with a date and time → events.md.
+- Anything with contact info (vendor, doctor, plumber) → an entry under
+  knowledge/.
+- A photo with no obvious filing target → describe what you see in one
+  short sentence and ask the sender what they want done with it.
+When the caption is empty, the photo IS the message — don't ask "what's
+this?" if the contents are self-explanatory; just file it.
 
 For every message:
 1. Read the files relevant to the request directly (the snapshot above
@@ -335,6 +352,49 @@ A separate process schedules each line as a one-shot job at the exact
 minute, with the full escalation ladder registered alongside. Don't try
 to send the reminder yourself — just write the line and confirm to the
 user.
+
+Calendar / events: /memories/events.md is a shared view of who's doing
+what. Events differ from reminders — they don't fire notifications;
+they exist so the family can see what's booked, spot conflicts, and
+plan around each other. Use ONE line per event in this exact format:
+
+  - [YYYY-MM-DD HH:MM-HH:MM] description @Name1 @Name2 — Location
+
+Variants:
+  - [YYYY-MM-DD] description @Name — Location              (all-day)
+  - [YYYY-MM-DD → YYYY-MM-DD] description @Name — Location (multi-day)
+
+Location is optional; @mentions identify who is involved. Use 24-hour
+time. Times are local; no timezone suffix.
+
+Organize events.md as two sections: `## Upcoming` (newest first or by
+date — your call) and `## Past`. Move events whose end time has passed
+into `## Past` lazily (when you next read or write the file). Keep
+`## Upcoming` short and current.
+
+Adding an event:
+1. Read events.md and household.md.
+2. Check for conflicts: any existing `## Upcoming` event that overlaps
+   in time AND shares an @mention with the new event. If found, tell
+   the user about the conflict ("you have piano with Avery 17:00–18:00
+   that day") and ask whether to add anyway.
+3. If no conflict (or user confirms), append the line under `## Upcoming`.
+
+Common queries to answer from events.md:
+- "what's on this week / Saturday / tomorrow" — list matching events
+  grouped by day, one line each. Skip @-noise if the asker is the only
+  person involved.
+- "is Sam free Friday afternoon" — filter by @Sam in the
+  window; reply with "yes, free" or "no, has X 14:00–15:30".
+- "what's everyone doing Saturday morning" — list events 06:00–12:00
+  on that date, grouped by person.
+- "are we free for dinner Friday" — check 18:00–21:00 across everyone
+  in household.md; reply "yes, you're all free" or list conflicts.
+
+For recurring events ("piano every Tuesday at 5pm for 8 weeks"), expand
+into individual lines on creation — eight separate lines, one per
+occurrence. No recurrence DSL. This makes editing one occurrence easy
+and keeps the file human-readable.
 
 Reply guidance:
 - Be concise. Telegram replies should usually fit under 200 characters.
@@ -557,7 +617,12 @@ def handle_message(
     memory_root: str | None = None,
     *,
     is_system: bool = False,
+<<<<<<< HEAD
     origin_chat: str | None = None,
+=======
+    image_b64: str | None = None,
+    image_mime: str | None = None,
+>>>>>>> upstream/main
 ) -> str:
     """Run one turn through Claude with memory + web tools. Returns plain-text reply.
 
@@ -565,11 +630,16 @@ def handle_message(
     thread state and uses a different framing prompt that omits the "you have
     a human user" framing.
 
+<<<<<<< HEAD
     `origin_chat` is the channel-tagged identifier of the chat this message
     arrived in (e.g. "tg:-5293147837" for a Telegram group). For DMs this
     matches `from_phone`. The agent embeds this into reminder lines as a
     `from:` tag so the scheduler can fall back to messaging the originating
     chat if @-named recipients don't resolve in the roster.
+=======
+    Pass `image_b64` (base64-encoded bytes) + `image_mime` (e.g. "image/jpeg")
+    to attach a photo. The agent sees the image alongside the text body.
+>>>>>>> upstream/main
     """
     base = _resolve_base(memory_root)
     memory = FileMemoryTool(base_path=base)
@@ -587,17 +657,23 @@ def handle_message(
 
     if is_system:
         thread_path = None
+<<<<<<< HEAD
         user_content = body
         system_prompt = SYSTEM_TASK_PROMPT.format(
             now_local=now_local,
             tz_name=tz_name,
             memory_index=memory_index,
         )
+=======
+        text_content = body
+        system_prompt = SYSTEM_TASK_PROMPT.format(now_local=now_local, tz_name=tz_name)
+>>>>>>> upstream/main
     else:
         thread_path = _thread_path(base, from_phone)
         thread_tail = _load_thread_tail(thread_path)
-        user_content = body
+        text_content = body
         if thread_tail:
+<<<<<<< HEAD
             user_content = f"<recent_thread>\n{thread_tail}\n</recent_thread>\n\n{body}"
         # Pull recent un-acked fires to this user so casual "ok"/"yep"
         # replies have an obvious target. Lazy import — keeps the agent
@@ -622,6 +698,9 @@ def handle_message(
                 )
         except Exception:
             log.exception("recent_fires_for lookup failed for %s", from_phone)
+=======
+            text_content = f"<recent_thread>\n{thread_tail}\n</recent_thread>\n\n{body}"
+>>>>>>> upstream/main
         system_prompt = SYSTEM_PROMPT.format(
             from_phone=from_phone,
             origin_chat=origin_chat,
@@ -632,6 +711,17 @@ def handle_message(
             knowledge_index=knowledge_index,
             recent_fires_block=recent_fires_block,
         )
+
+    if image_b64:
+        user_content: list | str = [
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": image_mime or "image/jpeg", "data": image_b64},
+            },
+            {"type": "text", "text": text_content or "(photo attached, no caption)"},
+        ]
+    else:
+        user_content = text_content
 
     tools = default_tools(memory)
     messages: List[dict] = [{"role": "user", "content": user_content}]
@@ -765,7 +855,8 @@ def handle_message(
     )
     if reply and thread_path is not None:
         try:
-            _append_thread(thread_path, today, body, reply)
+            thread_body = f"[photo] {body}".rstrip() if image_b64 else body
+            _append_thread(thread_path, today, thread_body, reply)
         except Exception:
             log.exception("thread write failed for %s", from_phone)
 

@@ -41,10 +41,10 @@ step() { echo; echo "==> $*"; }
 
 if [ "$skip_router" -eq 0 ]; then
   step "1/4  Deploy router → $ROUTER_APP"
-  fly deploy --remote-only --yes \
-    --config "$REPO_ROOT/router/fly.toml" \
-    --dockerfile "$REPO_ROOT/router/Dockerfile" \
-    -a "$ROUTER_APP"
+  # Run from router/ so the Dockerfile's `COPY __init__.py …` paths
+  # resolve against router/ as the build context.
+  ( cd "$REPO_ROOT/router" \
+    && fly deploy --remote-only --yes -a "$ROUTER_APP" )
 else
   step "1/4  (skipped: --skip-router)"
 fi
