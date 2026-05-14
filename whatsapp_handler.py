@@ -190,6 +190,25 @@ async def handle_baileys_event(payload: dict) -> None:
         reply_target = sender_id
         origin_chat = sender_id
 
+    # Group gate: only invoke the agent if the message is addressed to
+    # Rosey (name-prefix trigger like "rosey, …" / "hey rosey, …", or
+    # fuzzy classifier YES). DMs always pass through. Without this gate
+    # every group message burns an agent turn and Claude inconsistently
+    # decides whether to reply — which is the same bug the Telegram path
+    # solved with `_bot_addressed` + `gate.should_respond_in_group`.
+    if is_group:
+        import gate
+        should_respond, cleaned = await asyncio.to_thread(
+            gate.classify_group_message, text,
+        )
+        if not should_respond:
+            log.info(
+                "baileys: group msg from=%s ignored by gate (text_len=%d)",
+                sender_phone, len(text),
+            )
+            return
+        text = cleaned or text  # strip the name prefix if one was matched
+
     log.info(
         "baileys: msg from=%s in=%s text_len=%d",
         sender_phone, "group" if is_group else "dm", len(text),

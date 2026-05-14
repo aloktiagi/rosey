@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Rosey — a shared assistant for your whole family</title>
   <meta name="description" content="A shared assistant for your whole family. Reminders, vet numbers, who's on pickup — reachable from the chats you already use. Self-hosted, so your data stays yours." />
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet" />
@@ -78,17 +79,13 @@
     .brand-mark {
       width: 28px;
       height: 28px;
-      border-radius: 8px;
-      background: var(--accent);
-      display: grid;
+      display: inline-grid;
       place-items: center;
-      color: #fff;
-      font-family: 'Newsreader', serif;
-      font-style: italic;
-      font-weight: 500;
-      font-size: 17px;
-      line-height: 1;
-      padding-bottom: 2px;
+    }
+    .brand-mark svg {
+      display: block;
+      width: 28px;
+      height: 28px;
     }
     .nav-links {
       display: flex;
@@ -687,7 +684,19 @@
 <nav id="nav">
   <div class="wrap">
     <a href="#" class="brand">
-      <span class="brand-mark">R</span>
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+          <g fill="var(--accent)">
+            <circle cx="32" cy="18" r="7"/>
+            <circle cx="44" cy="25" r="7"/>
+            <circle cx="44" cy="39" r="7"/>
+            <circle cx="32" cy="46" r="7"/>
+            <circle cx="20" cy="39" r="7"/>
+            <circle cx="20" cy="25" r="7"/>
+          </g>
+          <circle cx="32" cy="32" r="3" fill="var(--bg)"/>
+        </svg>
+      </span>
       <span>Rosey</span>
     </a>
     <div class="nav-links">

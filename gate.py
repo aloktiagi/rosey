@@ -34,6 +34,14 @@ from anthropic import Anthropic
 
 log = logging.getLogger("rosey.gate")
 
+# Channel-agnostic name-prefix triggers. A group-chat message that
+# starts with one of these (case-insensitive, followed by space, comma,
+# or colon, or being the entire message) counts as explicitly addressed
+# to Rosey, regardless of channel. Channel-specific signals like
+# reply-to-bot or @-username mentions remain in the per-channel handler
+# because they're protocol-level not text-level.
+_NAME_PREFIXES = ("hey rosey", "rosey")
+
 # Haiku 4.5 — fast and cheap. Sonnet for this would be wasteful; we
 # only need a binary decision, no tools, no reasoning chain.
 GATE_MODEL = "claude-haiku-4-5-20251001"
@@ -83,6 +91,64 @@ def _get_client() -> Anthropic:
             max_retries=0,  # don't retry; on slow/failing call we'd rather drop the msg
         )
     return _client
+
+
+def explicit_name_trigger(text: str) -> tuple[bool, str]:
+    """Check if `text` is explicitly addressed to Rosey via a name
+    prefix ("rosey ..." or "hey rosey ..."), and return the message
+    with the trigger stripped.
+
+    Returns (matched, cleaned_text). Matching is case-insensitive and
+    requires the prefix to be followed by space/comma/colon — so
+    "rosey" matches "rosey, what's the wifi" but not "rosemary".
+
+    A bare "rosey" with nothing after returns (True, "") so callers
+    can prompt the user to add a body.
+    """
+    if not text:
+        return False, ""
+    lower = text.lower()
+    for prefix in _NAME_PREFIXES:
+        if lower == prefix:
+            return True, ""
+        if lower.startswith(prefix) and len(text) > len(prefix) and text[len(prefix)] in " ,:":
+            cleaned = text[len(prefix):].lstrip(" ,:").strip()
+            return True, cleaned
+    return False, text
+
+
+def classify_group_message(text: str) -> tuple[bool, str]:
+    """Channel-agnostic group-chat gate: decide whether Rosey should
+    respond and return the cleaned text (with any name prefix stripped).
+
+    Combines two layers, fail-closed by default:
+      1. Explicit name-prefix trigger ("rosey ..." or "hey rosey ...").
+         If matched, returns (True, cleaned_text) immediately — no
+         classifier call needed.
+      2. Fuzzy classifier (`should_respond_in_group`) if enabled. Used
+         to catch household-shaped requests that don't explicitly
+         address Rosey (e.g. "we need milk", "who's the plumber").
+
+    Protocol-specific signals — reply-to-bot, @-username mentions —
+    are NOT handled here. Callers (telegram_bot, whatsapp_handler)
+    should check those FIRST and only fall through to this helper for
+    the text-level decision.
+
+    Returns (should_respond, cleaned_text). When should_respond is
+    False, cleaned_text is the unchanged original.
+    """
+    text = (text or "").strip()
+    if not text:
+        return False, ""
+
+    matched, cleaned = explicit_name_trigger(text)
+    if matched:
+        return True, cleaned
+
+    if not fuzzy_enabled():
+        return False, text  # strict mode — only explicit triggers count
+
+    return should_respond_in_group(text), text
 
 
 def fuzzy_enabled() -> bool:

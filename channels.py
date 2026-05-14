@@ -147,10 +147,16 @@ def send_whatsapp(phone: str, body: str) -> str | None:
     it can be either a phone number (we normalize) or a full JID
     including a `group:<jid>` prefix for group destinations — Baileys
     speaks the WhatsApp wire protocol natively and supports both.
+
+    Strips Telegram-flavored HTML before dispatch. WhatsApp (both Cloud
+    API and Baileys/MultiDevice) renders HTML literally — `<a href=…>` etc.
+    show up as gibberish. Telegram-flavored callers can pass HTML
+    bodies blindly and this strip handles the WhatsApp side.
     """
+    plain_body = html.unescape(_HTML_TAG_RE.sub("", body))
     if _baileys_mode_enabled():
-        return _send_via_baileys(phone, body)
-    return _send_via_cloud_api(phone, body)
+        return _send_via_baileys(phone, plain_body)
+    return _send_via_cloud_api(phone, plain_body)
 
 
 def _baileys_mode_enabled() -> bool:
@@ -228,17 +234,13 @@ def _send_via_cloud_api(phone: str, body: str) -> str | None:
         )
         return None
 
-    # Strip Telegram-flavored HTML before sending — WhatsApp displays
-    # `<a href=...">N</a>` etc. literally, which looks like garbled
-    # markup to the recipient. After stripping tags we also unescape
-    # HTML entities so `&amp;` becomes `&`, `&lt;` becomes `<`, etc.
-    plain_body = html.unescape(_HTML_TAG_RE.sub("", body))
+    # Body is already HTML-stripped by `send_whatsapp` upstream.
     url = f"{WHATSAPP_API_BASE}/{phone_number_id}/messages"
     payload = json.dumps({
         "messaging_product": "whatsapp",
         "to": phone,
         "type": "text",
-        "text": {"body": plain_body[:WHATSAPP_TEXT_LIMIT]},
+        "text": {"body": body[:WHATSAPP_TEXT_LIMIT]},
     }).encode("utf-8")
     req = urllib.request.Request(
         url, data=payload, headers={

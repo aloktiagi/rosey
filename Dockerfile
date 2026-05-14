@@ -9,7 +9,7 @@ ENV PYTHONUNBUFFERED=1 \
 # Business Account status, so we run the Baileys MultiDevice protocol
 # client in parallel). curl is used by the official NodeSource setup.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates && \
+    apt-get install -y --no-install-recommends curl ca-certificates git && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     apt-get clean && rm -rf /var/lib/apt/lists/*

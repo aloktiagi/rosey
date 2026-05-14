@@ -278,13 +278,27 @@ Per-line `esc:Nm` / `miss:Nh` overrides still work if you need to deviate
 from the preset for a single reminder, but prefer picking the right
 `urg:` tier instead — it's clearer for everyone reading the file later.
 
+For recurring reminders, add `repeat:<interval>`:
+- `repeat:daily` — fires every day at the same time of day
+- `repeat:weekly` — once a week
+- `repeat:hourly` — every hour
+- `repeat:Nm` / `repeat:Nh` / `repeat:Nd` — arbitrary numeric intervals
+  (e.g. `repeat:2h` = every 2 hours, `repeat:3d` = every 3 days)
+
+When `repeat:` is present, the scheduler writes a fresh line for the next
+occurrence after each fire — so the user only has to ask once. Use this
+for: daily medications / drops / vitamins, weekly pet care, recurring
+chores (trash day, watering plants), periodic check-ins.
+
 Concrete examples (current chat = {origin_chat}):
 
   - [2026-05-06 12:45] baby feed time @Ankit @Sunanda from:{origin_chat} urg:normal
   - [2026-05-08 17:00] pick up baby from daycare @Ankit from:{origin_chat} urg:high
-  - [2026-05-08 20:00] give Maya her antibiotics @Sunanda from:{origin_chat} urg:high fb:Ankit
+  - [2026-05-08 20:00] give Siya her antibiotics @Sunanda from:{origin_chat} urg:high fb:Ankit
   - [2026-05-13 09:00] schedule annual physical @Ankit from:{origin_chat} urg:low
   - [2026-05-15 10:00] dentist appt @Ankit from:{origin_chat} urg:normal
+  - [2026-05-14 09:00] give Siya her vitamin D drops 💧 @Ankit @Sunanda from:{origin_chat} urg:normal repeat:daily
+  - [2026-05-14 08:00] wash hands before holding Siya @Ankit @Sunanda @Mamta @Madhu @Ashok @Anuj from:{origin_chat} urg:low repeat:daily
 
 A separate process schedules each line as a one-shot job at the exact
 minute, with the full escalation ladder registered alongside. Don't try
@@ -733,5 +747,14 @@ def handle_message(
             _scheduler.reconcile()
         except Exception:
             log.exception("scheduler.reconcile failed (turn=%s)", turn_id)
+        # If the agent appended `(acked by …)` annotations on this turn,
+        # propagate completion to the originating group chats. Safe to
+        # run unconditionally on modification — the scanner is idempotent
+        # via the `(broadcasted at …)` marker.
+        try:
+            import scheduler as _scheduler  # type: ignore[import-not-found]
+            _scheduler.scan_pending_ack_broadcasts()
+        except Exception:
+            log.exception("scan_pending_ack_broadcasts failed (turn=%s)", turn_id)
 
     return reply

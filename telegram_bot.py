@@ -68,10 +68,10 @@ def _save_last_update_id(uid: int) -> None:
     except OSError:
         log.exception("failed to persist last update_id")
 
-# Trigger words that count as "addressing Rosey" in a group chat. Matched
-# case-insensitively, must be the first word and followed by space/comma/colon
-# (or be the whole message).
-_NAME_PREFIXES = ("hey rosey", "rosey")
+# Name-prefix triggers live in gate.py as the channel-agnostic source
+# of truth (so the WhatsApp/Baileys path uses the same set). Imported
+# here for backward-compat references.
+from gate import _NAME_PREFIXES  # noqa: E402
 
 
 def _is_authorized(chat, user_id: int) -> bool:
@@ -147,14 +147,11 @@ def _bot_addressed(update, bot_username: str | None, bot_id: int | None) -> tupl
             cleaned = cleaned.strip(" ,:")
             return True, cleaned or text
 
-    # 3. Name-prefix triggers.
-    lower = text.lower()
-    for prefix in _NAME_PREFIXES:
-        if lower == prefix:
-            return True, ""
-        if lower.startswith(prefix) and len(text) > len(prefix) and text[len(prefix)] in " ,:":
-            cleaned = text[len(prefix) :].lstrip(" ,:").strip()
-            return True, cleaned
+    # 3. Name-prefix triggers — delegated to gate.py so the WhatsApp
+    # path uses the same set without duplication.
+    matched, cleaned = gate.explicit_name_trigger(text)
+    if matched:
+        return True, cleaned
 
     return False, text
 

@@ -72,6 +72,7 @@ from reminder_format import (
     LINE_RE,
     MENTION_RE,
     MISS_RE,
+    REPEAT_RE,
     URG_RE,
 )
 
@@ -161,7 +162,12 @@ def _parse_duration(value: str, unit: str) -> timedelta:
 
 def _strip_to_user_message(message: str) -> str:
     """Remove all metadata tags + parenthetical annotations to get the
-    plain message body suitable for sending in a Telegram reminder.
+    plain message body suitable for sending in a reminder of any channel.
+
+    Every tag the agent or reconciler writes onto a line needs to be
+    listed here, or it leaks into the user-facing text. The full set
+    today: @mentions, from:, id:, esc:, miss:, urg:, fb:, plus any
+    (parenthetical) lifecycle annotation.
     """
     s = message
     s = MENTION_RE.sub("", s)
@@ -169,6 +175,9 @@ def _strip_to_user_message(message: str) -> str:
     s = ID_RE.sub("", s)
     s = ESC_RE.sub("", s)
     s = MISS_RE.sub("", s)
+    s = URG_RE.sub("", s)
+    s = FB_RE.sub("", s)
+    s = REPEAT_RE.sub("", s)
     # Strip parenthetical lifecycle annotations: (fired ...), (acked ...) etc.
     s = re.sub(r"\([^)]*\)", "", s)
     return " ".join(s.split())
@@ -477,6 +486,125 @@ def _replace_line_in_section(
 # Job targets — fire / escalate / miss
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Recurring reminders — write the next occurrence after a successful fire.
+# ---------------------------------------------------------------------------
+
+def _parse_repeat_interval(spec: str) -> timedelta | None:
+    """Parse a `repeat:` value into a timedelta. Accepts named intervals
+    ("daily", "weekly", "hourly") and numeric forms ("5m", "3h", "2d").
+    Returns None for unknown forms.
+    """
+    if not spec:
+        return None
+    spec = spec.strip().lower()
+    if spec == "daily":
+        return timedelta(days=1)
+    if spec == "weekly":
+        return timedelta(days=7)
+    if spec == "hourly":
+        return timedelta(hours=1)
+    if len(spec) >= 2 and spec[:-1].isdigit() and spec[-1] in "mhd":
+        n = int(spec[:-1])
+        unit = spec[-1]
+        if unit == "m":
+            return timedelta(minutes=n)
+        if unit == "h":
+            return timedelta(hours=n)
+        if unit == "d":
+            return timedelta(days=n)
+    return None
+
+
+def _maybe_schedule_next_occurrence(task_id: str, ts_str: str, raw_message: str) -> bool:
+    """If `raw_message` carries a `repeat:` tag, write a fresh reminder
+    line for the next occurrence into the head section of reminders.md.
+
+    Idempotent: the new line's id is deterministic from (next_ts, body),
+    so calling this twice writes the same line; the second write is a
+    no-op via the same-id check in reconcile. Safe to invoke from
+    fire_one for every addressee — only the first call materially
+    changes the file.
+
+    Returns True if a new line was added (or already existed), False if
+    no recurrence is configured or parsing failed.
+    """
+    repeat_match = REPEAT_RE.search(raw_message)
+    if not repeat_match:
+        return False
+    interval = _parse_repeat_interval(repeat_match.group(1))
+    if interval is None:
+        log.warning(
+            "recur task=%s: unparseable repeat spec %r — chain stops",
+            task_id, repeat_match.group(1),
+        )
+        return False
+
+    # Compute the next timestamp. Use the ORIGINAL fire timestamp as the
+    # anchor so the cadence stays aligned with the user's intent (daily
+    # at 9am stays at 9am, not "1 day after whenever I happened to fire").
+    try:
+        # The line stores "YYYY-MM-DD HH:MM" (space) or "YYYY-MM-DDTHH:MM" (T).
+        ts_clean = ts_str.replace("T", " ")
+        current = datetime.strptime(ts_clean, "%Y-%m-%d %H:%M")
+    except ValueError:
+        log.warning("recur task=%s: unparseable ts %r — chain stops", task_id, ts_str)
+        return False
+    next_dt = current + interval
+    next_ts = next_dt.strftime("%Y-%m-%d %H:%M")
+
+    # Strip any annotations or existing id from the raw_message so the
+    # new line starts clean. The repeat: tag itself stays — that's what
+    # keeps the chain going.
+    body = raw_message
+    body = re.sub(r"\([^)]*\)", "", body)         # drop lifecycle annotations
+    body = ID_RE.sub("", body)                     # drop the previous id; reconcile assigns new
+    body = " ".join(body.split())                  # collapse whitespace
+
+    new_id = _generate_id(next_ts, body)
+
+    path = memories_dir() / "reminders.md"
+    if not path.exists():
+        log.warning("recur task=%s: reminders.md missing — chain stops", task_id)
+        return False
+    content = path.read_text(encoding="utf-8")
+
+    # Idempotency: if a line with this exact id already exists anywhere
+    # in the file, don't add another.
+    if f"id:{new_id}" in content:
+        return True
+
+    new_line = f"- [{next_ts}] {body} id:{new_id}".rstrip()
+
+    # Insert the new line into the head section (before any ## headers).
+    # Crude but matches the existing _split_sections convention.
+    sections = _split_sections(content)
+    head = sections["head"].rstrip()
+    head = head + "\n" + new_line if head else new_line
+    sections["head"] = head + "\n"
+
+    head_lines = sections["head"].splitlines()
+    fired_lines = [l for l in sections["fired"].splitlines() if l.strip()]
+    missed_lines = [l for l in sections["missed"].splitlines() if l.strip()]
+    _rewrite_file(
+        path, head_lines, fired_lines, missed_lines,
+        sections["malformed"], sections["failed"],
+    )
+    log.info(
+        "recur task=%s — wrote next occurrence at %s (new id=%s)",
+        task_id, next_ts, new_id,
+    )
+
+    # The new line needs a ladder of scheduler jobs (fire/escalate/etc).
+    # Trigger reconcile inline so the chain is live without waiting for
+    # the next agent turn.
+    try:
+        reconcile()
+    except Exception:
+        log.exception("recur task=%s: reconcile-after-write failed", task_id)
+    return True
+
+
 def fire_one(
     task_id: str,
     ts_str: str,
@@ -521,6 +649,15 @@ def fire_one(
     msg_pairs_str = " ".join(f"chat:{ident} msg:{mid}" for ident, mid in sent_pairs)
     annotation = f"(fired at {_now_str()} {msg_pairs_str})"
     _annotate_and_move(task_id, annotation, target_section="fired")
+
+    # If this line has a `repeat:` tag, write the next occurrence into
+    # head so the chain continues. Idempotent — safe to call once per
+    # addressee for multi-addressee reminders; only the first call
+    # materially changes the file.
+    try:
+        _maybe_schedule_next_occurrence(task_id, ts_str, raw_message)
+    except Exception:
+        log.exception("recur scheduling failed task=%s", task_id)
 
 
 def escalate_one(
@@ -708,9 +845,98 @@ def mark_acked(task_id: str, by_name: str) -> bool:
     """Append `(acked by <name> at <now>)` to the task's line. Returns True
     if the line was found and annotated, False otherwise. Future escalate/
     miss runs will self-skip on the annotation.
+
+    Also fires a cross-channel ack broadcast: if the reminder's `from:`
+    tag points to a group chat, the originating group is notified that
+    the addressee completed the task. Idempotent — won't double-broadcast.
     """
     annotation = f"(acked by {by_name} at {_now_str()})"
-    return _append_annotation(task_id, annotation)
+    ok = _append_annotation(task_id, annotation)
+    if ok:
+        # Best-effort: don't fail the ack if the broadcast can't go out.
+        try:
+            _broadcast_ack_to_origin(task_id, by_name)
+        except Exception:
+            log.exception("ack broadcast failed for task=%s", task_id)
+    return ok
+
+
+# Annotation appended by `_broadcast_ack_to_origin` to prevent re-sending
+# the same completion notice when the post-turn scanner runs.
+_BROADCASTED_RE = re.compile(r"\(broadcasted at ")
+
+
+def _broadcast_ack_to_origin(task_id: str, by_name: str) -> bool:
+    """Send a brief completion notice to the reminder's origin chat if it
+    is a group. Idempotent: scans the line for a `(broadcasted at …)`
+    annotation and noops if one is already present, then appends one
+    after a successful send.
+
+    Returns True if a notice was sent (or already had been), False if
+    the line couldn't be found, the origin isn't a group, or send failed.
+    """
+    state = _read_task_state(task_id)
+    if not state:
+        return False
+    line = state.get("line") or ""
+    if _BROADCASTED_RE.search(line):
+        return True  # already broadcasted on a prior pass
+    from_match = FROM_RE.search(line)
+    if not from_match:
+        return False
+    origin = from_match.group(1)
+    # Only broadcast for group origins. 1:1 origins (the originator and
+    # acker are typically the same person, or the originator can read
+    # the ack from reminders.md when next asked) don't benefit from a
+    # follow-up notification, and broadcasting back to the same person
+    # in their own DM is noise.
+    if "group:" not in origin:
+        return False
+    # Body of the reminder — strip metadata to a plain message for display.
+    m = LINE_RE.match(line.lstrip())
+    if not m:
+        return False
+    display_msg = _strip_to_user_message(m.group(2))
+    body = f"✓ {by_name} completed: {display_msg}"
+    sent = channels.send(origin, body)
+    if not sent:
+        log.warning("ack broadcast send failed: task=%s origin=%s", task_id, origin)
+        return False
+    log.info("ack broadcast task=%s to=%s by=%s", task_id, origin, by_name)
+    # Mark the line so a later scanner pass (or a re-call) won't re-send.
+    _append_annotation(task_id, f"(broadcasted at {_now_str()})")
+    return True
+
+
+def scan_pending_ack_broadcasts() -> int:
+    """Scan reminders.md for acked lines whose ack hasn't yet been
+    broadcast to the origin group, and broadcast each. Called after every
+    agent turn to catch agent-driven natural-language acks (where the
+    agent appends `(acked by …)` via str_replace, bypassing mark_acked).
+
+    Returns the count of broadcasts dispatched on this scan.
+    """
+    path = memories_dir() / "reminders.md"
+    if not path.exists():
+        return 0
+    sent = 0
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        if not raw_line.lstrip().startswith("- "):
+            continue
+        if not ACKED_RE.search(raw_line):
+            continue
+        if _BROADCASTED_RE.search(raw_line):
+            continue
+        ids = ID_RE.findall(raw_line)
+        if not ids:
+            continue
+        # Extract the most-recent acker name from the (acked by NAME …)
+        # annotation so the broadcast attributes correctly.
+        ack_m = re.search(r"\(acked by ([^\s)]+)", raw_line)
+        by_name = ack_m.group(1) if ack_m else "someone"
+        if _broadcast_ack_to_origin(ids[0], by_name):
+            sent += 1
+    return sent
 
 
 def find_task_by_chat_msg(chat_id: str, msg_id: int) -> Optional[str]:
