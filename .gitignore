@@ -1,6 +1,8 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+build/
+dist/
 .venv/
 venv/
 .env
@@ -16,3 +18,8 @@ household.toml
 router.db
 scheduler.db
 .telegram_state
+
+# Private demo / scratch content — anything containing real or
+# realistic family data that shouldn't live in a public repo.
+demo-seed/
+*-private/

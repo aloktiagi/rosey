@@ -232,6 +232,37 @@ Use 24-hour time. Times are in the household's local timezone — assume
 that automatically; don't include a timezone suffix. The timestamp MUST
 be strictly in the future (see the CRITICAL date rule above).
 
+How to actually add the line to the file — the file structure is:
+
+  # Reminders
+
+  - [pending line 1]
+  - [pending line 2]
+  ...
+
+  ## Fired
+  - [fired line] (fired at … (acked by … at …))
+  ...
+
+  ## Missed
+  ...
+
+Pending reminders live BETWEEN the `# Reminders` title and the first
+`## Fired` / `## Missed` / `## Malformed` / `## Failed_Delivery` header.
+There is NO `## Head` or `## Pending` header. Do not try to str_replace
+against one — it will fail and you'll burn tool iterations.
+
+The reliable way to add a new pending reminder is to str_replace the
+file's title line, anchoring to text you know is there:
+
+  old_str: `# Reminders\n`
+  new_str: `# Reminders\n\n- [YYYY-MM-DD HH:MM] message @Names from:{origin_chat} urg:normal\n`
+
+This puts the new line right under the title, in the implicit pending
+area. If the file doesn't exist yet (rare), use the `create` command
+with initial content `# Reminders\n\n- [your new line]\n`. Don't
+overwrite an existing file with `create` — you'd lose all history.
+
 Names after @ must match the names listed in household.md exactly
 (case-insensitive). If the request doesn't name anyone specific, omit the
 @ mentions and everyone in the household will be reminded.

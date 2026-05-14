@@ -1,7 +1,7 @@
 [project]
 name = "rosey"
 version = "0.1.0"
-description = "Telegram-driven household assistant (Claude memory tool + Telegram bot)"
+description = "Self-hosted household assistant with chat channels and markdown memory"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
@@ -24,9 +24,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# `[webhooks]` pulls in tornado, needed when TELEGRAM_WEBHOOK_URL is set
-# (i.e. cloud deploys). Polling mode doesn't need it but it's small and
-# always-installing keeps the deployed image identical to the local one.
+# Kept for backward-compatible install docs: `pip install -e '.[telegram]'`.
+# Telegram support is installed by default via the main dependency list.
 telegram = []
 
 [project.urls]
