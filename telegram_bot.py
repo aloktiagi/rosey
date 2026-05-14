@@ -195,7 +195,6 @@ async def _on_start(update, context):
         await update.message.reply_text(_unauthorized_message(name, chat.id))
 
 
-<<<<<<< HEAD
 async def _on_status_command(update, context):
     """`/status` — print a one-shot summary of pending/fired/missed reminders.
     Read-only; doesn't go through the agent loop. Authorized users only.
@@ -217,14 +216,26 @@ async def _on_status_command(update, context):
 _STATUS_INTENT_RE = re.compile(r"^/?status[?.!]?$", re.IGNORECASE)
 
 
-async def _run_agent(sender_id: str, body: str, origin_chat: str) -> str:
+async def _run_agent(
+    sender_id: str,
+    body: str,
+    origin_chat: str | None = None,
+    *,
+    image_b64: str | None = None,
+    image_mime: str | None = None,
+) -> str:
     # handle_message is synchronous and can block on Anthropic + memory I/O.
     # Run it off the event loop so the bot stays responsive.
     # `origin_chat` is "tg:<chat_id>" of the chat this message arrived in
     # (a group's negative id, or the user's own id for DMs). The agent
     # bakes it into reminder lines so the scheduler has a fallback target.
     return await asyncio.to_thread(
-        handle_message, sender_id, body, origin_chat=origin_chat
+        handle_message,
+        sender_id,
+        body,
+        origin_chat=origin_chat,
+        image_b64=image_b64,
+        image_mime=image_mime,
     )
 
 
@@ -253,19 +264,6 @@ def _is_reply_to_bot(msg, bot_id: int | None) -> bool:
         and bot_id is not None
         and reply_to.from_user is not None
         and reply_to.from_user.id == bot_id
-=======
-async def _run_agent(
-    sender_id: str,
-    body: str,
-    image_b64: str | None = None,
-    image_mime: str | None = None,
-) -> str:
-    # handle_message is synchronous and can block on Anthropic + memory I/O.
-    # Run it off the event loop so the bot stays responsive.
-    return await asyncio.to_thread(
-        handle_message, sender_id, body,
-        image_b64=image_b64, image_mime=image_mime,
->>>>>>> upstream/main
     )
 
 

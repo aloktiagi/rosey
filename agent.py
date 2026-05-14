@@ -617,12 +617,9 @@ def handle_message(
     memory_root: str | None = None,
     *,
     is_system: bool = False,
-<<<<<<< HEAD
     origin_chat: str | None = None,
-=======
     image_b64: str | None = None,
     image_mime: str | None = None,
->>>>>>> upstream/main
 ) -> str:
     """Run one turn through Claude with memory + web tools. Returns plain-text reply.
 
@@ -630,16 +627,14 @@ def handle_message(
     thread state and uses a different framing prompt that omits the "you have
     a human user" framing.
 
-<<<<<<< HEAD
     `origin_chat` is the channel-tagged identifier of the chat this message
     arrived in (e.g. "tg:-5293147837" for a Telegram group). For DMs this
     matches `from_phone`. The agent embeds this into reminder lines as a
     `from:` tag so the scheduler can fall back to messaging the originating
     chat if @-named recipients don't resolve in the roster.
-=======
+
     Pass `image_b64` (base64-encoded bytes) + `image_mime` (e.g. "image/jpeg")
     to attach a photo. The agent sees the image alongside the text body.
->>>>>>> upstream/main
     """
     base = _resolve_base(memory_root)
     memory = FileMemoryTool(base_path=base)
@@ -657,24 +652,18 @@ def handle_message(
 
     if is_system:
         thread_path = None
-<<<<<<< HEAD
-        user_content = body
+        text_content = body
         system_prompt = SYSTEM_TASK_PROMPT.format(
             now_local=now_local,
             tz_name=tz_name,
             memory_index=memory_index,
         )
-=======
-        text_content = body
-        system_prompt = SYSTEM_TASK_PROMPT.format(now_local=now_local, tz_name=tz_name)
->>>>>>> upstream/main
     else:
         thread_path = _thread_path(base, from_phone)
         thread_tail = _load_thread_tail(thread_path)
         text_content = body
         if thread_tail:
-<<<<<<< HEAD
-            user_content = f"<recent_thread>\n{thread_tail}\n</recent_thread>\n\n{body}"
+            text_content = f"<recent_thread>\n{thread_tail}\n</recent_thread>\n\n{body}"
         # Pull recent un-acked fires to this user so casual "ok"/"yep"
         # replies have an obvious target. Lazy import — keeps the agent
         # module importable in test contexts where the scheduler isn't set up.
@@ -698,9 +687,6 @@ def handle_message(
                 )
         except Exception:
             log.exception("recent_fires_for lookup failed for %s", from_phone)
-=======
-            text_content = f"<recent_thread>\n{thread_tail}\n</recent_thread>\n\n{body}"
->>>>>>> upstream/main
         system_prompt = SYSTEM_PROMPT.format(
             from_phone=from_phone,
             origin_chat=origin_chat,
