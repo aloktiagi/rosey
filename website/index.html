@@ -181,77 +181,111 @@
     }
     .btn-secondary:hover { border-color: var(--ink); color: var(--ink) !important; }
 
-    /* ─── hero illustration: chat preview ─────────────────── */
+    /* ─── hero illustration: animated phone mockup ────────── */
     .chat-preview {
-      margin-top: 64px;
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 24px;
-      max-width: 920px;
+      margin: 56px auto 0;
+      max-width: 380px;
     }
-    @media (max-width: 720px) {
-      .chat-preview { grid-template-columns: 1fr; }
+    .phone-frame {
+      background: #1a1a17;
+      border-radius: 40px;
+      padding: 10px;
+      box-shadow:
+        0 1px 0 rgba(255,255,255,.04) inset,
+        0 28px 60px -22px rgba(15,15,10,.28),
+        0 4px 12px rgba(15,15,10,.06);
+      position: relative;
     }
-    .device {
-      background: var(--surface);
-      border: 1px solid var(--rule);
-      border-radius: 18px;
-      padding: 18px;
-      box-shadow: 0 1px 0 rgba(0,0,0,.02), 0 12px 32px -12px rgba(15,15,10,.08);
+    .phone-frame::before {
+      content: '';
+      position: absolute;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 96px;
+      height: 22px;
+      background: #1a1a17;
+      border-radius: 0 0 12px 12px;
+      z-index: 2;
     }
-    .device-head {
+    .phone-screen {
+      background: var(--surface-tint);
+      border-radius: 32px;
+      padding: 38px 16px 22px;
+      min-height: 560px;
+      overflow: hidden;
+    }
+    .phone-header {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      padding-bottom: 12px;
+      gap: 12px;
+      padding: 4px 4px 16px;
       border-bottom: 1px solid var(--rule);
-      margin-bottom: 14px;
+      margin-bottom: 18px;
+    }
+    .phone-avatar {
+      width: 36px;
+      height: 36px;
+      flex-shrink: 0;
+    }
+    .phone-avatar svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    .phone-id .phone-name {
+      font-weight: 600;
+      font-size: 16px;
+      color: var(--ink);
+      line-height: 1.1;
+      margin-bottom: 2px;
+    }
+    .phone-id .phone-status {
       font-size: 13px;
       color: var(--ink-faint);
+      line-height: 1;
     }
-    .device-head .who {
-      display: flex; align-items: center; gap: 8px;
-      font-weight: 500;
-      color: var(--ink);
-    }
-    .pill {
-      padding: 3px 8px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 500;
-      letter-spacing: 0.02em;
-      text-transform: uppercase;
-    }
-    .pill-tg { background: #e3f1fb; color: #1f74b5; }
-    .pill-wa { background: #e1f3e7; color: #1d8048; }
-    .msg {
+    .chat-stream {
       display: flex;
-      margin: 10px 0;
+      flex-direction: column;
+      gap: 10px;
     }
-    .msg.them { justify-content: flex-start; }
-    .msg.you { justify-content: flex-end; }
-    .bubble {
-      max-width: 82%;
+    .chat-msg {
+      max-width: 78%;
       padding: 10px 14px;
-      border-radius: 16px;
+      border-radius: 18px;
       font-size: 14.5px;
       line-height: 1.45;
+      opacity: 0;
+      transform: translateY(10px);
+      animation: chatMsgIn .45s ease-out forwards;
+      animation-delay: var(--delay, 0s);
     }
-    .msg.them .bubble {
-      background: var(--surface-tint);
+    .chat-msg.you {
+      align-self: flex-end;
+      background: #dcf2c4;
       color: var(--ink);
-      border-bottom-left-radius: 4px;
+      border-bottom-right-radius: 6px;
     }
-    .msg.you .bubble {
-      background: var(--accent);
-      color: #fff;
-      border-bottom-right-radius: 4px;
+    .chat-msg.them {
+      align-self: flex-start;
+      background: var(--surface);
+      color: var(--ink);
+      border-bottom-left-radius: 6px;
     }
-    .bubble small {
-      display: block;
-      margin-top: 4px;
-      opacity: .65;
-      font-size: 11px;
+    .chat-msg .dot {
+      color: var(--accent);
+      margin-right: 4px;
+    }
+    @keyframes chatMsgIn {
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .chat-msg {
+        animation: none;
+        opacity: 1;
+        transform: none;
+      }
     }
 
     /* ─── sections ────────────────────────────────────────── */
@@ -748,26 +782,39 @@
     <p id="signup-msg" class="signup-msg" role="status" aria-live="polite"></p>
     <p class="hero-fineprint">Get the full setup walkthrough by email, plus the occasional note when Rosey grows. Or <a href="#how">see how it works</a> first.</p>
 
-    <div class="chat-preview">
-      <div class="device">
-        <div class="device-head">
-          <span class="who">Ankit</span>
-          <span class="pill pill-tg">Telegram</span>
+    <div class="chat-preview" aria-label="Animated chat preview showing example exchanges with Rosey">
+      <div class="phone-frame">
+        <div class="phone-screen">
+          <div class="phone-header">
+            <div class="phone-avatar" aria-hidden="true">
+              <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+                <g fill="var(--accent)">
+                  <circle cx="32" cy="18" r="7"/>
+                  <circle cx="44" cy="25" r="7"/>
+                  <circle cx="44" cy="39" r="7"/>
+                  <circle cx="32" cy="46" r="7"/>
+                  <circle cx="20" cy="39" r="7"/>
+                  <circle cx="20" cy="25" r="7"/>
+                </g>
+                <circle cx="32" cy="32" r="3" fill="var(--surface-tint)"/>
+              </svg>
+            </div>
+            <div class="phone-id">
+              <div class="phone-name">Rosey</div>
+              <div class="phone-status">online</div>
+            </div>
+          </div>
+          <div class="chat-stream" id="chat-stream">
+            <div class="chat-msg you" style="--delay:.5s">we're out of milk</div>
+            <div class="chat-msg them" style="--delay:1.2s">added 🥛 (Dairy)</div>
+            <div class="chat-msg you" style="--delay:2.1s">what's the wifi password again?</div>
+            <div class="chat-msg them" style="--delay:2.8s">goldfinch42</div>
+            <div class="chat-msg you" style="--delay:3.7s">find a plumber near us</div>
+            <div class="chat-msg them" style="--delay:4.5s">3 nearby:<br><span class="dot">·</span>Bay Plumbing — (650) 555-0123<br><span class="dot">·</span>Reliable Rooter — (650) 555-0177<br><span class="dot">·</span>Pipemasters — (650) 555-0144</div>
+            <div class="chat-msg you" style="--delay:5.9s">remind me Friday at 9am to take out the trash</div>
+            <div class="chat-msg them" style="--delay:6.7s">✓ I'll nudge you at 09:00 Fri.</div>
+          </div>
         </div>
-        <div class="msg you"><div class="bubble">Rosey, remind me to call Maya's preschool tomorrow at 9am</div></div>
-        <div class="msg them"><div class="bubble">Got it — tomorrow at 9:00 AM I'll nudge you about calling Maya's preschool.</div></div>
-        <div class="msg you"><div class="bubble">also what's the dog's vet number again</div></div>
-        <div class="msg them"><div class="bubble">Pawsitive Care — (415) 555-0142.</div></div>
-      </div>
-      <div class="device">
-        <div class="device-head">
-          <span class="who">Sunanda</span>
-          <span class="pill pill-wa">WhatsApp</span>
-        </div>
-        <div class="msg you"><div class="bubble">hey rosey did ankit add a vet number?</div></div>
-        <div class="msg them"><div class="bubble">Yes — Pawsitive Care, (415) 555-0142. Ankit added it about 30 seconds ago.</div></div>
-        <div class="msg you"><div class="bubble">remind us both to refill mishka's flea meds next sunday</div></div>
-        <div class="msg them"><div class="bubble">Done. Sunday at 9 AM I'll ping you and Ankit about Mishka's flea meds.</div></div>
       </div>
     </div>
   </div>
@@ -804,7 +851,7 @@
           <svg class="icon" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         </div>
         <h3>Knows who's who</h3>
-        <p>A roster file maps people to phones. "@Ankit, the trash" reaches him on whichever channel he's on. No more cc'ing the family group.</p>
+        <p>A roster file maps people to phones. "@Alex, the trash" reaches them on whichever channel they're on. No more cc'ing the family group.</p>
       </div>
       <div class="feature">
         <div class="feature-icon">
@@ -837,30 +884,30 @@
     <div class="section-eyebrow">A real exchange</div>
     <h2 style="margin-left:auto;margin-right:auto;">What a Tuesday <em>actually</em> looks like.</h2>
     <p class="section-lede" style="margin-left:auto;margin-right:auto;">
-      Two people, two channels, one shared mind. Ankit on Telegram in the
-      morning; Sunanda on WhatsApp from her commute. Rosey threads them.
+      Two people, two channels, one shared mind. Alex on Telegram in the
+      morning; Sam on WhatsApp during the commute. Rosey threads them.
     </p>
 
     <div class="transcript" style="text-align:left;">
       <div class="transcript-line">
-        <div class="who"><span class="name">Ankit</span><span class="channel">Telegram · 7:42 AM</span></div>
-        <div class="what">Rosey, Maya has a snow day today, can you remind Sunanda to grab snacks on her way home</div>
+        <div class="who"><span class="name">Alex</span><span class="channel">Telegram · 7:42 AM</span></div>
+        <div class="what">Rosey, Maya has a snow day today, can you remind Sam to grab snacks on the way home</div>
       </div>
       <div class="transcript-line rosey">
         <div class="who"><span class="name">Rosey</span><span class="channel">Telegram</span></div>
-        <div class="what">Got it. I'll ping Sunanda at 5:30 PM about grabbing snacks. <em>(scheduled · fires on WhatsApp)</em></div>
+        <div class="what">Got it. I'll ping Sam at 5:30 PM about grabbing snacks. <em>(scheduled · fires on WhatsApp)</em></div>
       </div>
       <div class="transcript-line">
-        <div class="who"><span class="name">Sunanda</span><span class="channel">WhatsApp · 11:14 AM</span></div>
+        <div class="who"><span class="name">Sam</span><span class="channel">WhatsApp · 11:14 AM</span></div>
         <div class="what">rosey what was that thing ankit said about today</div>
       </div>
       <div class="transcript-line rosey">
         <div class="who"><span class="name">Rosey</span><span class="channel">WhatsApp</span></div>
-        <div class="what">Maya has a snow day. Ankit asked me to remind you to grab snacks on your way home — I have that scheduled for 5:30.</div>
+        <div class="what">Maya has a snow day. Alex asked me to remind you to grab snacks on your way home — I have that scheduled for 5:30.</div>
       </div>
       <div class="transcript-line">
         <div class="who"><span class="name">Rosey</span><span class="channel">WhatsApp · 5:30 PM</span></div>
-        <div class="what">Hey Sunanda — heads up about snacks for Maya on the way home.</div>
+        <div class="what">Hey Sam — heads up about snacks for Maya on the way home.</div>
       </div>
     </div>
   </div>
@@ -966,7 +1013,7 @@
         </div>
         <div class="deep-item">
           <h3><span class="num">02</span> Roster maps people, not devices</h3>
-          <p>One markdown file lists each person's channel identifiers. <code>@Ankit</code> in a reminder body resolves to every channel he's on, in parallel. New phone? Edit one line.</p>
+          <p>One markdown file lists each person's channel identifiers. <code>@Alex</code> in a reminder body resolves to every channel they're on, in parallel. New phone? Edit one line.</p>
         </div>
         <div class="deep-item">
           <h3><span class="num">03</span> Reminders survive restarts</h3>
@@ -990,8 +1037,8 @@
             <span></span>
           </div>
           <div class="code-body"><span class="c-c"># Family</span>
-- **Ankit** — tg:8600355980, wa:+15048755536
-- **Sunanda** — wa:+15049991122
+- **Alex** — tg:8600355980, wa:+15048755536
+- **Sam** — wa:+15049991122
 - **Maya** — <span class="c-c">(too young for a phone)</span>
 
 <span class="c-c"># Pets</span>
@@ -1081,6 +1128,27 @@
   const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 8);
   window.addEventListener('scroll', onScroll, { passive: true });
   onScroll();
+
+  // chat preview animation loop — replays the message sequence
+  // every ~10s so the hero feels alive. Respects reduced-motion.
+  (function () {
+    const stream = document.getElementById('chat-stream');
+    if (!stream) return;
+    const prefersReducedMotion = window.matchMedia
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) return;
+    const msgs = stream.querySelectorAll('.chat-msg');
+    function replay() {
+      msgs.forEach(m => {
+        m.style.animation = 'none';
+        // force reflow so the animation restarts
+        void m.offsetWidth;
+        m.style.animation = '';
+      });
+    }
+    // Loop after the sequence finishes (~7.5s) + a beat of pause.
+    setInterval(replay, 10000);
+  })();
 
   // smooth scroll for in-page anchors
   document.querySelectorAll('a[href^="#"]').forEach(a => {
