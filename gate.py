@@ -95,24 +95,33 @@ def _get_client() -> Anthropic:
 
 def explicit_name_trigger(text: str) -> tuple[bool, str]:
     """Check if `text` is explicitly addressed to Rosey via a name
-    prefix ("rosey ..." or "hey rosey ..."), and return the message
-    with the trigger stripped.
+    prefix ("rosey ..." or "hey rosey ..." or "@rosey ..."), and
+    return the message with the trigger stripped.
 
     Returns (matched, cleaned_text). Matching is case-insensitive and
     requires the prefix to be followed by space/comma/colon — so
     "rosey" matches "rosey, what's the wifi" but not "rosemary".
 
-    A bare "rosey" with nothing after returns (True, "") so callers
-    can prompt the user to add a body.
+    A bare "rosey" or "@rosey" with nothing after returns (True, "")
+    so callers can prompt the user to add a body.
+
+    Strips a leading "@" before matching so WhatsApp/Telegram's
+    formal @-mentions (rendered as literal "@Rosey ..." in the text
+    payload by the time we see it) hit the trigger instead of
+    falling through to the fuzzy classifier.
     """
     if not text:
         return False, ""
-    lower = text.lower()
+    # Drop a single leading @ if present — same prefix logic applies whether
+    # the user typed "rosey, ..." or "@Rosey ...". Other leading chars
+    # (whitespace, etc.) are preserved as-is to keep semantics tight.
+    candidate = text[1:].lstrip() if text.startswith("@") else text
+    lower = candidate.lower()
     for prefix in _NAME_PREFIXES:
         if lower == prefix:
             return True, ""
-        if lower.startswith(prefix) and len(text) > len(prefix) and text[len(prefix)] in " ,:":
-            cleaned = text[len(prefix):].lstrip(" ,:").strip()
+        if lower.startswith(prefix) and len(candidate) > len(prefix) and candidate[len(prefix)] in " ,:":
+            cleaned = candidate[len(prefix):].lstrip(" ,:").strip()
             return True, cleaned
     return False, text
 

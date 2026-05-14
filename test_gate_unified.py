@@ -45,6 +45,12 @@ def test_explicit_name_trigger() -> None:
         ("Hey Rosey: pick up Maya",     True,  "pick up Maya"),
         ("rosey",                       True,  ""),                # bare prefix
         ("HEY ROSEY",                   True,  ""),                # case-insensitive bare
+        # WhatsApp/Telegram formal @-mentions arrive as literal "@Rosey ..."
+        # in the text payload — these MUST trigger or group messages get
+        # silently dropped by the fuzzy classifier.
+        ("@Rosey test",                  True,  "test"),
+        ("@rosey remind me to call mom", True,  "remind me to call mom"),
+        ("@Rosey",                       True,  ""),
         # Negatives
         ("rosemary doesn't count",      False, "rosemary doesn't count"),
         ("the babysitter texted Rosey", False, "the babysitter texted Rosey"),
