@@ -128,6 +128,12 @@ def check_due() -> None:
             # Couldn't send to anyone — keep it for retry next minute.
             new_pending.append(line)
 
+    if new_fired:
+        log.info(
+            "reminders.tick total=%d fired=%d still_pending=%d",
+            len(pending_lines), len(new_fired), len(new_pending),
+        )
+
     if not new_fired:
         return  # no changes
 
