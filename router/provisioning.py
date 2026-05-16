@@ -29,7 +29,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import db
+from . import db, notifications, telegram_onboarding
 
 log = logging.getLogger(__name__)
 
@@ -53,43 +53,94 @@ def _provision(engine, admin_phone: str) -> None:
         return
 
     data = sess["data"]
-    admin_name = data["admin_name"]
+    flow = data.get("flow", "v1")
+    admin_name = data.get("admin_name") or "Admin"
     members = data.get("members", [])
     fly_app_name = f"rosey-h-{secrets.token_hex(4)}"
 
     dry_run = os.environ.get("ROUTER_DRY_RUN", "1") == "1"
     log.info(
-        "provisioning %s (%s + %d members, dry_run=%s)",
-        fly_app_name, admin_name, len(members), dry_run,
+        "provisioning %s flow=%s (%s + %d members, dry_run=%s)",
+        fly_app_name, flow, admin_name, len(members), dry_run,
     )
 
     try:
         if dry_run:
             time.sleep(1)  # simulate
         else:
-            _provision_real(fly_app_name, admin_name, admin_phone, members)
+            _provision_real(
+                fly_app_name,
+                admin_name,
+                admin_phone,
+                members,
+                household_name=data.get("household_name"),
+                timezone=data.get("timezone"),
+                upfront_context=data.get("upfront_context"),
+            )
     except Exception:
         log.exception("provisioning failed for %s", fly_app_name)
         # Leave session in PROVISIONING state so they don't accidentally
         # restart onboarding; admin handles via DB or restart.
         return
 
-    # Commit DB rows
+    # Commit DB rows. The shape diverges by flow:
+    #   v1: members in the data blob are already-known {name, phone}.
+    #       Insert each as an active member.
+    #   v2: members are pre-roster {name, tg_username}. Insert as pending
+    #       placeholders; the admin will share invite codes with them.
     household_id = db.create_household(engine, fly_app_name, status="active")
-    db.add_member(engine, admin_phone, household_id, admin_name)
-    for m in members:
-        db.add_member(engine, m["phone"], household_id, m["name"])
+    db.add_member(
+        engine, admin_phone, household_id, admin_name,
+        email=data.get("email"),
+    )
+
+    invite_codes: list[dict] = []
+    if flow == "v2":
+        for m in members:
+            placeholder = db.add_pending_member(
+                engine,
+                household_id,
+                m["name"],
+                tg_username=m.get("tg_username"),
+            )
+            code = telegram_onboarding.generate_invite_code(
+                engine,
+                member={"household_id": household_id, "phone": placeholder},
+                invitee_name=m["name"],
+            )
+            invite_codes.append({"name": m["name"], "code": code})
+    else:
+        for m in members:
+            db.add_member(engine, m["phone"], household_id, m["name"])
+
     db.delete_onboarding(engine, admin_phone)
 
-    log.info("provisioning %s active id=%s", fly_app_name, household_id)
-    _send_welcomes(admin_name, admin_phone, members)
+    log.info("provisioning %s active id=%s flow=%s", fly_app_name, household_id, flow)
+
+    if flow == "v2":
+        _send_v2_welcome(
+            admin_phone=admin_phone,
+            admin_name=admin_name,
+            household_name=data.get("household_name") or "your household",
+            invite_codes=invite_codes,
+        )
+    else:
+        _send_welcomes(admin_name, admin_phone, members)
 
 
 # ---------------------------------------------------------------------------
 # Real provisioning via flyctl
 # ---------------------------------------------------------------------------
 
-def _provision_real(app_name: str, admin_name: str, admin_phone: str, members: list) -> None:
+def _provision_real(
+    app_name: str,
+    admin_name: str,
+    admin_phone: str,
+    members: list,
+    household_name: Optional[str] = None,
+    timezone: Optional[str] = None,
+    upfront_context: Optional[str] = None,
+) -> None:
     org = os.environ.get("ROSEY_FLY_ORG", "personal")
     region = os.environ.get("ROSEY_FLY_REGION", "sjc")
     config_path = os.environ.get("ROSEY_HOUSEHOLD_CONFIG", str(DEFAULT_HOUSEHOLD_CONFIG))
@@ -100,7 +151,14 @@ def _provision_real(app_name: str, admin_name: str, admin_phone: str, members: l
     if not Path(config_path).exists():
         raise RuntimeError(f"household config not found: {config_path}")
 
-    secrets_kv = _collect_secrets(admin_name, admin_phone, members)
+    secrets_kv = _collect_secrets(
+        admin_name,
+        admin_phone,
+        members,
+        household_name=household_name,
+        timezone=timezone,
+        upfront_context=upfront_context,
+    )
 
     # 1. Create the app
     _run_fly("apps", "create", app_name, "--org", org)
@@ -128,7 +186,14 @@ def _provision_real(app_name: str, admin_name: str, admin_phone: str, members: l
     )
 
 
-def _collect_secrets(admin_name: str, admin_phone: str, members: list) -> dict:
+def _collect_secrets(
+    admin_name: str,
+    admin_phone: str,
+    members: list,
+    household_name: Optional[str] = None,
+    timezone: Optional[str] = None,
+    upfront_context: Optional[str] = None,
+) -> dict:
     required = [
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
@@ -140,28 +205,73 @@ def _collect_secrets(admin_name: str, admin_phone: str, members: list) -> dict:
         raise RuntimeError(f"missing env vars for provisioning: {missing}")
 
     secrets_kv = {k: os.environ[k] for k in required}
-    secrets_kv["HOUSEHOLD_TOML"] = _render_household_toml(admin_name, admin_phone, members)
+    secrets_kv["HOUSEHOLD_TOML"] = _render_household_toml(
+        admin_name,
+        admin_phone,
+        members,
+        household_name=household_name,
+        upfront_context=upfront_context,
+    )
+    # Per-household timezone overrides the global default in household_template.fly.toml.
+    # When None we leave the env default in place (currently America/Los_Angeles).
+    if timezone:
+        secrets_kv["SCHEDULER_TZ"] = timezone
     return secrets_kv
 
 
-def _render_household_toml(admin_name: str, admin_phone: str, members: list) -> str:
-    blocks = [
-        'shopping_cadence = "weekly"',
+def _render_household_toml(
+    admin_name: str,
+    admin_phone: str,
+    members: list,
+    household_name: Optional[str] = None,
+    upfront_context: Optional[str] = None,
+) -> str:
+    """Render the household.toml the VM consumes via HOUSEHOLD_TOML env var.
+
+    Emits the canonical field names that ``household.py`` understands:
+    ``telegram_id`` (numeric, no "tg:" prefix) for known members, and
+    ``telegram_username`` for v2 pre-rostered placeholders.
+    """
+    blocks: list[str] = []
+    if household_name:
+        blocks.append(f"household_name = {_toml_str(household_name)}")
+    blocks.append('shopping_cadence = "weekly"')
+    if upfront_context:
+        blocks.append(f"upfront_context = {_toml_str(upfront_context)}")
+    blocks.extend([
         "",
         "[[members]]",
         f"name = {_toml_str(admin_name)}",
-        f"phone = {_toml_str(admin_phone)}",
-        'notes = ""',
-    ]
+    ])
+    blocks.extend(_id_lines(admin_phone))
+    blocks.append('notes = ""')
     for m in members:
-        blocks.extend([
-            "",
-            "[[members]]",
-            f"name = {_toml_str(m['name'])}",
-            f"phone = {_toml_str(m['phone'])}",
-            'notes = ""',
-        ])
+        blocks.extend(["", "[[members]]", f"name = {_toml_str(m['name'])}"])
+        if m.get("phone"):
+            # v1 shape: "tg:NNN" string in m["phone"]
+            blocks.extend(_id_lines(m["phone"]))
+        elif m.get("tg_username"):
+            # v2 pending member with a known username
+            blocks.append(
+                f"telegram_username = {_toml_str(m['tg_username'].lstrip('@').lower())}"
+            )
+        blocks.append('notes = ""')
     return "\n".join(blocks) + "\n"
+
+
+def _id_lines(identifier: str) -> list:
+    """Convert an internal "tg:NNN" identifier to TOML ``telegram_id``
+    lines. Returns [] for missing/unparseable identifiers so the caller
+    can still emit the rest of the member block."""
+    if not identifier:
+        return []
+    s = identifier.strip()
+    if s.startswith("tg:"):
+        return [f"telegram_id = {_toml_str(s[len('tg:'):])}"]
+    if s.startswith("@"):
+        return [f"telegram_username = {_toml_str(s.lstrip('@').lower())}"]
+    # Unrecognized — keep the original under `phone` for backwards compat
+    return [f"phone = {_toml_str(s)}"]
 
 
 def _toml_str(s: str) -> str:
@@ -194,7 +304,7 @@ def _run_fly(*args: str, cwd: Optional[str] = None, timeout: int = 300) -> str:
 # ---------------------------------------------------------------------------
 
 def _send_welcomes(admin_name: str, admin_id: str, members: list) -> None:
-    """Send a Telegram welcome to the admin and any pre-listed members."""
+    """v1 welcome: simple DM to admin and each pre-listed member."""
     others_for_admin = [{"name": m["name"], "id": m["phone"]} for m in members]
     _send_welcome(admin_id, admin_name, others_for_admin)
     for m in members:
@@ -219,33 +329,67 @@ def _welcome_body(name: str, others: list) -> str:
 
 
 def _send_welcome(identifier: str, name: str, others: list) -> None:
-    body = _welcome_body(name, others)
+    """v1 welcome DM. Skips non-Telegram identifiers."""
     if not identifier.startswith("tg:"):
         log.warning("welcome skipped — non-Telegram identifier %s", identifier)
         return
-    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not bot_token:
-        log.warning("welcome skipped — TELEGRAM_BOT_TOKEN missing")
-        return
-
-    import json as _json
-    import urllib.error
-    import urllib.request
-
     chat_id = int(identifier[len("tg:"):])
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = _json.dumps({"chat_id": chat_id, "text": body[:4096]}).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=payload, headers={"Content-Type": "application/json"}
+    if notifications.send_text(chat_id, _welcome_body(name, others)):
+        log.info("welcome sent to tg:%s", chat_id)
+
+
+def _send_v2_welcome(
+    admin_phone: str,
+    admin_name: str,
+    household_name: str,
+    invite_codes: list,
+) -> None:
+    """v2 welcome to the admin: confirms setup, lists invite codes for any
+    pre-rostered family, and offers a deep-link button to create the
+    family group.
+
+    ``invite_codes`` is a list of ``{name, code}`` dicts. If empty, the
+    welcome just nudges them toward the group button.
+    """
+    if not admin_phone.startswith("tg:"):
+        log.warning("v2 welcome skipped — non-Telegram identifier %s", admin_phone)
+        return
+    chat_id = int(admin_phone[len("tg:"):])
+
+    bot_username = os.environ.get("TELEGRAM_BOT_USERNAME", "")
+    button_url = (
+        f"https://t.me/{bot_username}?startgroup=ready"
+        if bot_username
+        else "https://t.me/RoseyHouseholdBot?startgroup=ready"
     )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            if resp.status == 200:
-                log.info("welcome sent to tg:%s", chat_id)
-            else:
-                log.warning("welcome status=%s for tg:%s", resp.status, chat_id)
-    except urllib.error.HTTPError as e:
-        log.error("welcome failed for tg:%s status=%s body=%s",
-                  chat_id, e.code, e.read().decode("utf-8", errors="replace")[:300])
-    except Exception:
-        log.exception("welcome failed for tg:%s", chat_id)
+
+    lines = [f"🎉 **{household_name}** is set up, {admin_name}!", ""]
+    if invite_codes:
+        lines.append("Codes to share with family (each works once, expires in 7 days):")
+        lines.append("")
+        for entry in invite_codes:
+            lines.append(f"• **{entry['name']}** → `{entry['code']}`")
+        lines.append("")
+        lines.append(
+            "They each open Rosey on Telegram and paste their code."
+        )
+        lines.append("")
+
+    lines.append(
+        "Next: tap the button below to create your family group. "
+        "Rosey will join, and anyone in the group can text me to add to the list, "
+        "set reminders, or ask what's on the calendar."
+    )
+    body = "\n".join(lines)
+
+    ok = notifications.send_with_url_button(
+        chat_id,
+        body,
+        button_label="Create family group",
+        button_url=button_url,
+        parse_mode="Markdown",
+    )
+    if ok:
+        log.info("v2 welcome sent to tg:%s codes=%d", chat_id, len(invite_codes))
+    else:
+        log.warning("v2 welcome failed for tg:%s", chat_id)

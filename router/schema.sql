@@ -4,18 +4,30 @@ CREATE TABLE IF NOT EXISTS households (
     id              TEXT PRIMARY KEY,
     fly_app_name    TEXT NOT NULL UNIQUE,
     status          TEXT NOT NULL,
+    -- chat_id of the Telegram group the bot has been added to (negative
+    -- for groups). NULL until the user creates one via the "Create family
+    -- group" inline button at the end of onboarding.
+    group_chat_id   TEXT,
     created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS members (
+    -- For active members: "tg:<chat_id>".
+    -- For pre-rostered placeholders waiting on first contact: "pending:<uuid>".
     phone           TEXT PRIMARY KEY,
     household_id    TEXT NOT NULL,
     name            TEXT NOT NULL,
+    -- Lowercased Telegram username without "@". Populated for pending rows
+    -- and (when known) for active rows. Used for pending → active upgrade
+    -- when a username-bearing user first messages the bot.
+    tg_username     TEXT,
+    email           TEXT,
     joined_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_members_household ON members(household_id);
+-- Indexes live in db._migrate so they're created AFTER all columns are
+-- present (legacy DBs upgrade via ALTER TABLE first).
 
 CREATE TABLE IF NOT EXISTS onboarding_sessions (
     phone           TEXT PRIMARY KEY,
@@ -24,8 +36,6 @@ CREATE TABLE IF NOT EXISTS onboarding_sessions (
     created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
-CREATE INDEX IF NOT EXISTS idx_onb_updated ON onboarding_sessions(updated_at);
 
 CREATE TABLE IF NOT EXISTS invite_codes (
     code            TEXT PRIMARY KEY,
@@ -38,5 +48,3 @@ CREATE TABLE IF NOT EXISTS invite_codes (
     created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE
 );
-
-CREATE INDEX IF NOT EXISTS idx_invite_household ON invite_codes(household_id);

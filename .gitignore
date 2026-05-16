@@ -23,3 +23,9 @@ scheduler.db
 # realistic family data that shouldn't live in a public repo.
 demo-seed/
 *-private/
+router.db-journal
+router.db
+router.db-journal
+router.db
+router.db-journal
+router.db

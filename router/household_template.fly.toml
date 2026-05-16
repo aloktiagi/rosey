@@ -8,6 +8,9 @@ primary_region = "sjc"
 [env]
   MEMORY_ROOT = "/data/memories"
   ROSEY_ENABLE_SCHEDULER = "1"
+  # Default timezone for households that didn't pick one during onboarding
+  # (v1 flow, or v2 with the user-typed tz unresolvable). v2 onboarding
+  # injects a per-household SCHEDULER_TZ Fly secret which overrides this.
   SCHEDULER_TZ = "America/Los_Angeles"
 
 [[mounts]]

@@ -1,10 +1,18 @@
 """Router app: Telegram webhook entry point.
 
-For each inbound Telegram message, look up the sender in the tenant DB and either:
-  - forward to that household's per-VM Fly app (via Fly 6PN); or
-  - hand to the Telegram-native onboarding FSM for unknown senders.
+For each inbound Telegram update, dispatch one of:
+  - **new_chat_members event** → the bot was just added to a group. Look
+    up the inviter, link the group's chat_id to their household, post a
+    welcome message in the group.
+  - **group message** (chat.id < 0) → look up the household by the
+    group's chat_id, forward to that household's VM.
+  - **DM from a known member** → forward to that household's VM.
+  - **DM from an unknown sender** → hand to the Telegram-native
+    onboarding FSM (v1 single-question OR v2 six-step, picked by the
+    /start payload).
 
-Identifier scheme: `tg:NNN` where NNN is the Telegram chat_id.
+Identifier scheme: ``tg:NNN`` where NNN is the Telegram chat_id (or
+sender's user_id for group routing).
 """
 from __future__ import annotations
 
@@ -16,12 +24,14 @@ import os
 import threading
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
+from typing import Optional
 
 import requests
 from dotenv import load_dotenv
 from flask import Flask, Response, abort, request
 
-from . import db, provisioning, telegram_onboarding
+from . import db, notifications, provisioning, telegram_onboarding
 
 FEEDBACK_PREFIXES = ("/feedback", "/contact", "/support")
 
@@ -68,35 +78,10 @@ def _send_feedback(member: dict, sender_id: str, message: str) -> None:
         f"household {member['household_id'][:8]}\n\n"
         f"{message}"
     )
-    try:
-        _send_telegram_message(int(operator_id), text[:4096])
+    if notifications.send_text(int(operator_id), text):
         log.info("feedback forwarded to operator from=%s len=%d", sender_id, len(message))
-    except Exception:
-        log.exception("feedback forward failed from=%s", sender_id)
-
-
-def _send_telegram_message(chat_id: int, text: str) -> bool:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not token:
-        log.warning("TELEGRAM_BOT_TOKEN missing — cannot send tg:%s", chat_id)
-        return False
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json_mod.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=payload, headers={"Content-Type": "application/json"}
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status == 200
-    except urllib.error.HTTPError as e:
-        log.error(
-            "telegram send failed to tg:%s status=%s body=%s",
-            chat_id, e.code, e.read().decode("utf-8", errors="replace")[:300],
-        )
-        return False
-    except Exception:
-        log.exception("telegram send failed to tg:%s", chat_id)
-        return False
+    else:
+        log.warning("feedback forward failed from=%s", sender_id)
 
 
 def _post_to_household(fly_app_name: str, path: str, payload: dict) -> bool:
@@ -126,41 +111,73 @@ def _forward_to_household_telegram(fly_app_name: str, payload: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Telegram inbound webhook
+# Telegram payload parsing
 # ---------------------------------------------------------------------------
 
-def _validate_telegram_secret() -> None:
-    """Telegram lets us register a webhook with a secret_token; it sends it
-    back as X-Telegram-Bot-Api-Secret-Token. Use it as a cheap auth check."""
-    expected = os.environ.get("TELEGRAM_WEBHOOK_SECRET")
-    if not expected:
-        log.warning("TELEGRAM_WEBHOOK_SECRET not set — skipping telegram auth")
-        return
-    provided = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-    if not provided or not hmac.compare_digest(provided, expected):
-        log.warning("rejected telegram webhook with bad secret_token")
-        abort(403)
+@dataclass
+class TelegramUpdate:
+    """Parsed view of one Telegram update — only the bits the router uses.
 
-
-def _telegram_extract(update: dict) -> tuple:
-    """Parse the bits of a Telegram update we care about. Returns
-    (chat_id, text, first_name, photo_file_id) — photo_file_id is the
-    largest variant's file_id when the message has a photo, else None.
-    Returns (None, None, None, None) for irrelevant update types.
+    All fields default to None / empty so individual branches can check
+    just what they need without nested ``get`` calls everywhere.
     """
+    chat_id: Optional[int] = None
+    chat_type: str = ""              # "private", "group", "supergroup", "channel"
+    text: str = ""
+    start_payload: str = ""           # parsed from "/start <payload>"
+    from_user_id: Optional[int] = None
+    from_username: str = ""           # lowercased, no "@"
+    first_name: str = ""
+    photo_file_id: Optional[str] = None
+    new_chat_members: list = None
+    is_bot_added_to_group: bool = False  # convenience: bot was in new_chat_members
+
+
+def _telegram_extract(update: dict) -> TelegramUpdate:
+    """Parse the bits of a Telegram update we care about."""
+    out = TelegramUpdate(new_chat_members=[])
     msg = update.get("message") or update.get("edited_message")
     if not msg:
-        return None, None, None, None
+        return out
+
     chat = msg.get("chat") or {}
-    chat_id = chat.get("id")
-    text = (msg.get("text") or msg.get("caption") or "").strip()
+    out.chat_id = chat.get("id")
+    out.chat_type = chat.get("type") or ""
+
     sender = msg.get("from") or {}
-    first_name = sender.get("first_name") or ""
-    # Telegram photos arrive as an array of size variants; the last one is
-    # the largest. We forward only the largest to the household VM.
+    out.from_user_id = sender.get("id")
+    out.from_username = (sender.get("username") or "").lower()
+    out.first_name = sender.get("first_name") or ""
+
+    text = (msg.get("text") or msg.get("caption") or "").strip()
+    out.text, out.start_payload = _parse_start_payload(text)
+
+    # Photo: forward the largest variant to the household VM
     photo = msg.get("photo") or []
-    photo_file_id = photo[-1]["file_id"] if photo else None
-    return chat_id, text, first_name, photo_file_id
+    out.photo_file_id = photo[-1]["file_id"] if photo else None
+
+    # new_chat_members fires when the bot (or anyone) is added to a group.
+    out.new_chat_members = msg.get("new_chat_members") or []
+    bot_username = (os.environ.get("TELEGRAM_BOT_USERNAME") or "").lower().lstrip("@")
+    if out.new_chat_members and bot_username:
+        out.is_bot_added_to_group = any(
+            (m.get("is_bot") and (m.get("username") or "").lower() == bot_username)
+            for m in out.new_chat_members
+        )
+
+    return out
+
+
+def _parse_start_payload(text: str) -> tuple:
+    """Split ``/start <payload>`` into ('', payload). For any other text,
+    returns (text, ''). Plain ``/start`` returns ('', '')."""
+    stripped = text.strip()
+    if stripped == "/start":
+        return "", ""
+    if stripped.lower().startswith("/start "):
+        payload = stripped[len("/start "):].strip()
+        return "", payload
+    return text, ""
 
 
 def _download_telegram_photo(file_id: str) -> tuple:
@@ -193,79 +210,229 @@ def _download_telegram_photo(file_id: str) -> tuple:
         return None, None
 
 
+def _validate_telegram_secret() -> None:
+    """Telegram lets us register a webhook with a secret_token; it sends it
+    back as X-Telegram-Bot-Api-Secret-Token. Use it as a cheap auth check."""
+    expected = os.environ.get("TELEGRAM_WEBHOOK_SECRET")
+    if not expected:
+        log.warning("TELEGRAM_WEBHOOK_SECRET not set — skipping telegram auth")
+        return
+    provided = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not provided or not hmac.compare_digest(provided, expected):
+        log.warning("rejected telegram webhook with bad secret_token")
+        abort(403)
+
+
+# ---------------------------------------------------------------------------
+# Telegram inbound webhook — dispatcher
+# ---------------------------------------------------------------------------
+
 @app.post("/telegram")
 def telegram_webhook() -> Response:
     _validate_telegram_secret()
 
     update = request.get_json(silent=True) or {}
-    chat_id, text, first_name, photo_file_id = _telegram_extract(update)
-    if chat_id is None:
-        return Response("", status=200)
-    if not text and not photo_file_id:
-        # Voice notes, stickers, etc. Ack so Telegram doesn't retry.
+    parsed = _telegram_extract(update)
+
+    if parsed.chat_id is None:
         return Response("", status=200)
 
-    sender_id = f"tg:{chat_id}"
-    log.info(
-        "telegram inbound from=%s len=%d photo=%s",
-        sender_id, len(text), "yes" if photo_file_id else "no",
+    # Branch 1: bot was added to a group → link group to household.
+    if parsed.is_bot_added_to_group:
+        _handle_bot_added_to_group(parsed)
+        return Response("", status=200)
+
+    # Branch 2: group message (the bot is already a member, someone said
+    # something in the chat). Route by group's chat_id.
+    if parsed.chat_type in ("group", "supergroup") and parsed.chat_id < 0:
+        _handle_group_message(parsed)
+        return Response("", status=200)
+
+    # Branch 3: DM. The chat_id IS the user's user_id for private chats.
+    if not parsed.text and not parsed.photo_file_id and not parsed.start_payload:
+        # Voice notes, stickers, edited messages we don't care about, etc.
+        return Response("", status=200)
+
+    _handle_dm(parsed)
+    return Response("", status=200)
+
+
+# ---------------------------------------------------------------------------
+# Branch handlers
+# ---------------------------------------------------------------------------
+
+def _handle_bot_added_to_group(parsed: TelegramUpdate) -> None:
+    """Bot was just added to a group. Link the group to a household via
+    the inviter (Telegram doesn't echo the startgroup payload back to the
+    bot, so we identify the household by who invited us).
+    """
+    inviter_id = f"tg:{parsed.from_user_id}"
+    inviter = db.lookup_household(engine, inviter_id)
+    group_chat_id = parsed.chat_id
+
+    if not inviter:
+        # Random group adds the bot without ever onboarding → say so and leave.
+        log.info(
+            "bot added to group %s by unknown user %s — leaving",
+            group_chat_id, inviter_id,
+        )
+        notifications.send_text(
+            group_chat_id,
+            "Hi! I'm Rosey, but I need an onboarded household to function. "
+            "Anyone here can DM @"
+            + (os.environ.get("TELEGRAM_BOT_USERNAME") or "the bot")
+            + " to start a free household first. Bye for now 👋",
+        )
+        notifications.leave_chat(group_chat_id)
+        return
+
+    existing = inviter.get("group_chat_id")
+    if existing and str(existing) != str(group_chat_id):
+        log.info(
+            "bot added to NEW group %s for household %s (was %s) — relinking",
+            group_chat_id, inviter["household_id"], existing,
+        )
+
+    db.set_group_chat_id(engine, inviter["household_id"], group_chat_id)
+    threading.Thread(
+        target=_post_to_household,
+        args=(
+            inviter["fly_app_name"],
+            "/admin/link-group",
+            {"group_chat_id": group_chat_id},
+        ),
+        daemon=True,
+    ).start()
+    notifications.send_text(
+        group_chat_id,
+        "Hi everyone — I'm Rosey 👋\n\n"
+        "Anyone here can text me to add to the shopping list, set a reminder, "
+        "ask what's on the calendar, or share what's going on. I learn over time.\n\n"
+        "Try \"add milk to the list\" or \"remind me Friday at 9am to call Mom\".",
     )
+
+
+def _handle_group_message(parsed: TelegramUpdate) -> None:
+    """A message in a group the bot is a member of. Look up the household
+    by the group's chat_id and forward."""
+    household = db.lookup_household_by_group(engine, parsed.chat_id)
+    if household is None:
+        log.warning(
+            "group message in unknown group %s from %s — ignoring",
+            parsed.chat_id, parsed.from_user_id,
+        )
+        return
+
+    payload = {
+        "chat_id": parsed.chat_id,           # the group's chat_id
+        "from_user_id": parsed.from_user_id,  # who actually said it
+        "text": parsed.text,
+        "name": parsed.first_name,
+        "from_username": parsed.from_username,
+        "is_group": True,
+    }
+    if parsed.photo_file_id:
+        img_bytes, img_mime = _download_telegram_photo(parsed.photo_file_id)
+        if img_bytes:
+            payload["image_b64"] = base64.b64encode(img_bytes).decode("ascii")
+            payload["image_mime"] = img_mime
+    threading.Thread(
+        target=_forward_to_household_telegram,
+        args=(household["fly_app_name"], payload),
+        daemon=True,
+    ).start()
+
+
+def _handle_dm(parsed: TelegramUpdate) -> None:
+    """A private-chat message from one human to the bot. Known sender →
+    forward to household. Unknown sender → onboarding FSM."""
+    chat_id = parsed.chat_id
+    sender_id = f"tg:{chat_id}"
 
     member = db.lookup_household(engine, sender_id)
     if member:
-        # /invite <name> — admin command to generate an invite code
-        if text.lower().lstrip().startswith("/invite"):
-            invitee = text.lstrip()[len("/invite"):].strip()
-            if not invitee:
-                _send_telegram_message(
-                    chat_id,
-                    "Send: /invite <their name> — I'll give you a code to share with them.",
-                )
-                return Response("", status=200)
-            code = telegram_onboarding.generate_invite_code(engine, member, invitee)
-            bot_username = os.environ.get("TELEGRAM_BOT_USERNAME", "the Rosey bot")
-            _send_telegram_message(
+        _handle_known_member_dm(parsed, member)
+        return
+
+    _handle_unknown_dm(parsed)
+
+
+def _handle_known_member_dm(parsed: TelegramUpdate, member: dict) -> None:
+    """DM from an active household member. Handle /invite, /feedback,
+    otherwise forward to household VM."""
+    chat_id = parsed.chat_id
+    sender_id = f"tg:{chat_id}"
+    text = parsed.text
+
+    # /invite <name> — admin command to generate an invite code
+    if text.lower().lstrip().startswith("/invite"):
+        invitee = text.lstrip()[len("/invite"):].strip()
+        if not invitee:
+            notifications.send_text(
                 chat_id,
-                f"Share this with {invitee}:\n\n"
-                f"Open @{bot_username} and send: {code}\n\n"
-                "(Expires in 7 days.)",
+                "Send: /invite <their name> — I'll give you a code to share with them.",
             )
-            return Response("", status=200)
+            return
+        code = telegram_onboarding.generate_invite_code(engine, member, invitee)
+        bot_username = os.environ.get("TELEGRAM_BOT_USERNAME", "the Rosey bot")
+        notifications.send_text(
+            chat_id,
+            f"Share this with {invitee}:\n\n"
+            f"Open @{bot_username} and send: {code}\n\n"
+            "(Expires in 7 days.)",
+        )
+        return
 
-        # /feedback intercept (text-only)
-        if text and _is_feedback(text):
-            note = _strip_feedback_prefix(text)
-            if not note:
-                _send_telegram_message(
-                    chat_id, "Send /feedback followed by your message — I'll pass it on."
-                )
-                return Response("", status=200)
-            threading.Thread(
-                target=_send_feedback,
-                args=(member, sender_id, note),
-                daemon=True,
-            ).start()
-            _send_telegram_message(chat_id, "Got it — passed your message along. 🙏")
-            return Response("", status=200)
-
-        # Forward to household VM (with photo if present)
-        payload = {"chat_id": chat_id, "text": text, "name": first_name}
-        if photo_file_id:
-            img_bytes, img_mime = _download_telegram_photo(photo_file_id)
-            if img_bytes:
-                payload["image_b64"] = base64.b64encode(img_bytes).decode("ascii")
-                payload["image_mime"] = img_mime
+    # /feedback intercept (text-only)
+    if text and _is_feedback(text):
+        note = _strip_feedback_prefix(text)
+        if not note:
+            notifications.send_text(
+                chat_id,
+                "Send /feedback followed by your message — I'll pass it on.",
+            )
+            return
         threading.Thread(
-            target=_forward_to_household_telegram,
-            args=(member["fly_app_name"], payload),
+            target=_send_feedback,
+            args=(member, sender_id, note),
             daemon=True,
         ).start()
-        return Response("", status=200)
+        notifications.send_text(chat_id, "Got it — passed your message along. 🙏")
+        return
 
-    # Unknown sender → Telegram-native onboarding FSM.
-    if text.strip().lower() == "/start":
-        text = ""
-    reply = telegram_onboarding.handle(engine, chat_id, first_name, text)
+    # Forward to household VM
+    payload = {
+        "chat_id": chat_id,
+        "from_user_id": parsed.from_user_id,
+        "text": text,
+        "name": parsed.first_name,
+        "from_username": parsed.from_username,
+        "is_group": False,
+    }
+    if parsed.photo_file_id:
+        img_bytes, img_mime = _download_telegram_photo(parsed.photo_file_id)
+        if img_bytes:
+            payload["image_b64"] = base64.b64encode(img_bytes).decode("ascii")
+            payload["image_mime"] = img_mime
+    threading.Thread(
+        target=_forward_to_household_telegram,
+        args=(member["fly_app_name"], payload),
+        daemon=True,
+    ).start()
+
+
+def _handle_unknown_dm(parsed: TelegramUpdate) -> None:
+    """DM from someone not in any household. Hand to onboarding FSM."""
+    chat_id = parsed.chat_id
+    sender_id = f"tg:{chat_id}"
+
+    reply = telegram_onboarding.handle(
+        engine,
+        chat_id,
+        parsed.first_name,
+        parsed.text,
+        payload=parsed.start_payload,
+    )
 
     # If the reply implies a member was just added (invite redemption),
     # propagate to the household VM's household.md.
@@ -274,17 +441,23 @@ def telegram_webhook() -> Response:
         if added:
             threading.Thread(
                 target=_post_to_household,
-                args=(added["fly_app_name"], "/admin/add-member",
-                      {"name": added["name"], "identifier": sender_id}),
+                args=(
+                    added["fly_app_name"],
+                    "/admin/add-member",
+                    {"name": added["name"], "identifier": sender_id},
+                ),
                 daemon=True,
             ).start()
 
     if reply.trigger_provisioning:
         provisioning.kick_off(engine, sender_id)
 
-    _send_telegram_message(chat_id, reply.text)
-    return Response("", status=200)
+    notifications.send_text(chat_id, reply.text)
 
+
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
 
 @app.get("/health")
 def health() -> Response:
