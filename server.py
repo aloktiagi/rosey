@@ -45,6 +45,13 @@ from telegram_bot import (
     _on_voice,
 )
 
+# Configure logging at module level so Python app logs are visible when
+# hypercorn imports `server:asgi_app` (production path — bypasses main()).
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+
 log = logging.getLogger("rosey.server")
 
 # Quart app is module-global so it can be the ASGI app hypercorn finds
