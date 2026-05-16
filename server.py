@@ -20,12 +20,12 @@ Local dev: this entrypoint can also run, but the `python -m telegram_bot`
 polling-mode entrypoint stays available for offline testing where you
 don't want to deal with public webhook URLs.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
-import signal
 import sys
 
 from dotenv import load_dotenv
@@ -38,6 +38,7 @@ import whatsapp_handler
 # Reuse all the existing handler functions from telegram_bot.py — no
 # need to duplicate the trigger gating, ack lookup, fuzzy gate, etc.
 from telegram_bot import (
+    _on_photo,
     _on_start,
     _on_status_command,
     _on_text,
@@ -80,6 +81,7 @@ async def _startup():
     app.add_handler(CommandHandler("start", _on_start))
     app.add_handler(CommandHandler("status", _on_status_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _on_text))
+    app.add_handler(MessageHandler(filters.PHOTO, _on_photo))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, _on_voice))
 
     await app.initialize()
@@ -103,7 +105,8 @@ async def _startup():
         )
         log.info(
             "telegram webhook registered: %s (auth=%s)",
-            full_webhook_url, "on" if secret_token else "OFF",
+            full_webhook_url,
+            "on" if secret_token else "OFF",
         )
     else:
         log.warning(
@@ -157,6 +160,7 @@ async def telegram_route():
         return Response("bad request", status=400)
 
     from telegram import Update
+
     update = Update.de_json(body, _ptb_app.bot)
     # process_update handles routing through CommandHandlers, MessageHandlers,
     # etc. Same path that PTB's built-in webhook server would have used.

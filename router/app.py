@@ -6,9 +6,9 @@ For each inbound Telegram message, look up the sender in the tenant DB and eithe
 
 Identifier scheme: `tg:NNN` where NNN is the Telegram chat_id.
 """
+
 from __future__ import annotations
 
-import base64
 import hmac
 import json as json_mod
 import logging
@@ -16,6 +16,7 @@ import os
 import threading
 import urllib.error
 import urllib.request
+from typing import Optional
 
 import requests
 from dotenv import load_dotenv
@@ -41,6 +42,7 @@ db.init_db(engine)
 # Common helpers
 # ---------------------------------------------------------------------------
 
+
 def _is_feedback(body: str) -> bool:
     lower = body.lower().lstrip()
     return any(lower == p or lower.startswith(p + " ") for p in FEEDBACK_PREFIXES)
@@ -50,7 +52,7 @@ def _strip_feedback_prefix(body: str) -> str:
     lower = body.lower().lstrip()
     for p in FEEDBACK_PREFIXES:
         if lower.startswith(p):
-            return body.lstrip()[len(p):].strip()
+            return body.lstrip()[len(p) :].strip()
     return body.strip()
 
 
@@ -70,7 +72,9 @@ def _send_feedback(member: dict, sender_id: str, message: str) -> None:
     )
     try:
         _send_telegram_message(int(operator_id), text[:4096])
-        log.info("feedback forwarded to operator from=%s len=%d", sender_id, len(message))
+        log.info(
+            "feedback forwarded to operator from=%s len=%d", sender_id, len(message)
+        )
     except Exception:
         log.exception("feedback forward failed from=%s", sender_id)
 
@@ -91,7 +95,9 @@ def _send_telegram_message(chat_id: int, text: str) -> bool:
     except urllib.error.HTTPError as e:
         log.error(
             "telegram send failed to tg:%s status=%s body=%s",
-            chat_id, e.code, e.read().decode("utf-8", errors="replace")[:300],
+            chat_id,
+            e.code,
+            e.read().decode("utf-8", errors="replace")[:300],
         )
         return False
     except Exception:
@@ -99,7 +105,12 @@ def _send_telegram_message(chat_id: int, text: str) -> bool:
         return False
 
 
-def _post_to_household(fly_app_name: str, path: str, payload: dict) -> bool:
+def _post_to_household(
+    fly_app_name: str,
+    path: str,
+    payload: dict,
+    extra_headers: Optional[dict] = None,
+) -> bool:
     """POST JSON to a household VM endpoint over 6PN. Returns True on 2xx."""
     base = os.environ.get("ROSEY_HOUSEHOLD_BASE_URL")
     if base:
@@ -111,6 +122,8 @@ def _post_to_household(fly_app_name: str, path: str, payload: dict) -> bool:
         "X-Rosey-Internal-Token": token or "",
         "Content-Type": "application/json",
     }
+    if extra_headers:
+        headers.update(extra_headers)
     try:
         r = requests.post(url, json=payload, headers=headers, timeout=15)
         log.info("posted %s to %s status=%d", path, fly_app_name, r.status_code)
@@ -120,14 +133,28 @@ def _post_to_household(fly_app_name: str, path: str, payload: dict) -> bool:
         return False
 
 
-def _forward_to_household_telegram(fly_app_name: str, payload: dict) -> None:
-    """POST a parsed Telegram message to the household VM's /telegram endpoint."""
-    _post_to_household(fly_app_name, "/telegram", payload)
+def _forward_to_household_telegram(
+    fly_app_name: str, update: dict, telegram_secret: str
+) -> None:
+    """Forward a raw Telegram update to the household VM's /telegram endpoint.
+
+    The household VM runs python-telegram-bot which expects the original
+    webhook shape (Update.de_json). We pass the secret token through so
+    server.py's signature check passes; the router has already validated
+    it on the inbound side.
+    """
+    _post_to_household(
+        fly_app_name,
+        "/telegram",
+        update,
+        extra_headers={"X-Telegram-Bot-Api-Secret-Token": telegram_secret},
+    )
 
 
 # ---------------------------------------------------------------------------
 # Telegram inbound webhook
 # ---------------------------------------------------------------------------
+
 
 def _validate_telegram_secret() -> None:
     """Telegram lets us register a webhook with a secret_token; it sends it
@@ -163,36 +190,6 @@ def _telegram_extract(update: dict) -> tuple:
     return chat_id, text, first_name, photo_file_id
 
 
-def _download_telegram_photo(file_id: str) -> tuple:
-    """Resolve a Telegram file_id → (bytes, mime). Returns (None, None) on
-    failure. Telegram serves photos as JPEG.
-    """
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not token:
-        log.warning("TELEGRAM_BOT_TOKEN missing — cannot download photo")
-        return None, None
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{token}/getFile",
-            json={"file_id": file_id},
-            timeout=10,
-        )
-        r.raise_for_status()
-        file_path = r.json().get("result", {}).get("file_path")
-        if not file_path:
-            log.warning("getFile returned no file_path")
-            return None, None
-        r = requests.get(
-            f"https://api.telegram.org/file/bot{token}/{file_path}",
-            timeout=30,
-        )
-        r.raise_for_status()
-        return r.content, "image/jpeg"
-    except Exception:
-        log.exception("photo download failed for file_id=%s", file_id)
-        return None, None
-
-
 @app.post("/telegram")
 def telegram_webhook() -> Response:
     _validate_telegram_secret()
@@ -208,14 +205,16 @@ def telegram_webhook() -> Response:
     sender_id = f"tg:{chat_id}"
     log.info(
         "telegram inbound from=%s len=%d photo=%s",
-        sender_id, len(text), "yes" if photo_file_id else "no",
+        sender_id,
+        len(text),
+        "yes" if photo_file_id else "no",
     )
 
     member = db.lookup_household(engine, sender_id)
     if member:
         # /invite <name> — admin command to generate an invite code
         if text.lower().lstrip().startswith("/invite"):
-            invitee = text.lstrip()[len("/invite"):].strip()
+            invitee = text.lstrip()[len("/invite") :].strip()
             if not invitee:
                 _send_telegram_message(
                     chat_id,
@@ -237,7 +236,8 @@ def telegram_webhook() -> Response:
             note = _strip_feedback_prefix(text)
             if not note:
                 _send_telegram_message(
-                    chat_id, "Send /feedback followed by your message — I'll pass it on."
+                    chat_id,
+                    "Send /feedback followed by your message — I'll pass it on.",
                 )
                 return Response("", status=200)
             threading.Thread(
@@ -248,16 +248,14 @@ def telegram_webhook() -> Response:
             _send_telegram_message(chat_id, "Got it — passed your message along. 🙏")
             return Response("", status=200)
 
-        # Forward to household VM (with photo if present)
-        payload = {"chat_id": chat_id, "text": text, "name": first_name}
-        if photo_file_id:
-            img_bytes, img_mime = _download_telegram_photo(photo_file_id)
-            if img_bytes:
-                payload["image_b64"] = base64.b64encode(img_bytes).decode("ascii")
-                payload["image_mime"] = img_mime
+        # Forward the RAW Telegram update to the household VM. server.py
+        # runs python-telegram-bot which expects the original webhook shape
+        # (Update.de_json + process_update). Photos are downloaded by the
+        # household VM's PTB handlers, not pre-downloaded here.
+        inbound_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
         threading.Thread(
             target=_forward_to_household_telegram,
-            args=(member["fly_app_name"], payload),
+            args=(member["fly_app_name"], update, inbound_secret),
             daemon=True,
         ).start()
         return Response("", status=200)
@@ -274,8 +272,11 @@ def telegram_webhook() -> Response:
         if added:
             threading.Thread(
                 target=_post_to_household,
-                args=(added["fly_app_name"], "/admin/add-member",
-                      {"name": added["name"], "identifier": sender_id}),
+                args=(
+                    added["fly_app_name"],
+                    "/admin/add-member",
+                    {"name": added["name"], "identifier": sender_id},
+                ),
                 daemon=True,
             ).start()
 
