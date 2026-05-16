@@ -1,0 +1,13 @@
+# Pre-commit hooks. Setup (once per clone):
+#   pip install pre-commit
+#   pre-commit install
+#
+# After that, `git commit` will run these automatically. To run on the
+# whole tree manually: `pre-commit run --all-files`.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.13
+    hooks:
+      - id: ruff           # lint (with --fix)
+        args: [--fix]
+      - id: ruff-format    # formatter

@@ -17,6 +17,29 @@ cp .env.example .env  # fill in ANTHROPIC_API_KEY + TELEGRAM_BOT_TOKEN
 
 For the SaaS router, see `router/README.md`.
 
+## Formatting & linting
+
+We use [ruff](https://docs.astral.sh/ruff/) for both formatting and a
+conservative lint set. Set up the pre-commit hook once and it'll run
+automatically on every `git commit`:
+
+```bash
+.venv/bin/pip install pre-commit
+.venv/bin/pre-commit install
+```
+
+To run on the whole tree manually:
+
+```bash
+.venv/bin/pre-commit run --all-files
+# or directly:
+.venv/bin/ruff check --fix && .venv/bin/ruff format
+```
+
+Config lives in `pyproject.toml` under `[tool.ruff]`. CI re-runs the
+same checks on every PR, so a forgotten `pre-commit install` won't slip
+through — but it's nicer to catch it locally.
+
 ## Running tests
 
 There's no full agent test (it makes live API calls). When changing

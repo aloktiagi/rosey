@@ -39,3 +39,29 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 py-modules = ["memory_tool", "agent", "alexa_handler", "cli", "app", "summary", "household", "reminders", "telegram_bot", "transcribe", "channels", "paths", "reminder_format", "roster", "tools", "scheduler", "gate", "server", "whatsapp_handler"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+extend-exclude = ["baileys/node_modules", "memories", ".venv"]
+
+[tool.ruff.lint]
+# Conservative starting set. Bump up as the codebase grows.
+#   E   — pycodestyle errors
+#   F   — pyflakes (unused imports, undefined names, etc.)
+#   I   — isort (import order)
+#   UP  — pyupgrade (modernize syntax to target-version)
+#   B   — flake8-bugbear (likely-bug patterns)
+select = ["E", "F", "I", "UP", "B"]
+# E501 (line-too-long) is handled by the formatter; ruff format will break
+# lines where it can and leave the rest (long URLs, error strings) alone.
+# E741 is too pedantic for single-letter loop vars in comprehensions.
+# UP006/UP035/UP045 modernize type annotations to PEP 604 / PEP 585 syntax,
+# but with `from __future__ import annotations` the old forms work fine and
+# the rewrite is pure churn. Re-enable when the floor moves to Python 3.10.
+ignore = ["E501", "E741", "UP006", "UP035", "UP045"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test scripts often have long inline fixtures and one-off patterns.
+"test_*.py" = ["B"]
+"scripts/test_*.py" = ["B"]
