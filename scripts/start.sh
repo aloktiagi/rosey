@@ -31,8 +31,11 @@ else
 fi
 
 echo "[start] launching hypercorn"
+# Bind to [::] (dual-stack) instead of 0.0.0.0 so the router can reach this
+# VM over Fly's 6PN private network (IPv6-only). On Linux this also accepts
+# IPv4 connections since IPV6_V6ONLY defaults to off.
 hypercorn server:asgi_app \
-  --bind 0.0.0.0:8080 \
+  --bind '[::]:8080' \
   --access-logfile - \
   --error-logfile - &
 HYPERCORN_PID=$!
