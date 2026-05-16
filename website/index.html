@@ -169,8 +169,13 @@
         </ul>
         <div class="hosted-qr">
           <div class="qr-box">
-            <!-- Real QR rendered client-side by qrcode.js below. -->
-            <div id="hosted-qr-canvas" aria-label="QR code to start Rosey on Telegram"></div>
+            <!-- Pre-rendered SVG (encodes the same URL as the "Open in
+                 Telegram" button). Static asset = no CDN dependency, no
+                 runtime JS, works on any network. Regenerate with
+                 scripts/build-qr.sh if the URL ever changes. -->
+            <img src="qr-rosey-household-bot.svg"
+                 width="180" height="180"
+                 alt="QR code to start Rosey on Telegram (@RoseyHouseholdBot)" />
           </div>
           <div class="hosted-qr-meta">
             <p class="qr-caption">Scan with your phone camera.</p>
@@ -259,41 +264,12 @@
   </div>
 </footer>
 
-<!-- QR code rendering for the hosted-option card. Tiny lib (~6KB),
-     pulled from a CDN. Generates the QR client-side from the same URL
-     the "Open in Telegram" button uses. -->
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" defer></script>
-
 <script>
   // sticky-nav border on scroll
   const nav = document.getElementById('nav');
   const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 8);
   window.addEventListener('scroll', onScroll, { passive: true });
   onScroll();
-
-  // Render the hosted-option QR code. The URL must match the
-  // "Open in Telegram" button href so both routes land in the same
-  // place. Replace the bot username once @RoseyHouseholdBot is live.
-  function renderHostedQR() {
-    const target = document.getElementById('hosted-qr-canvas');
-    const link = document.getElementById('hosted-telegram-link');
-    if (!target || !link || typeof QRCode === 'undefined') return;
-    QRCode.toCanvas(link.href, {
-      width: 180,
-      margin: 1,
-      color: { dark: '#1a1814', light: '#fbf9f4' },
-      errorCorrectionLevel: 'M',
-    }, function (err, canvas) {
-      if (err || !canvas) return;
-      target.innerHTML = '';
-      target.appendChild(canvas);
-    });
-  }
-  // The QR lib script has `defer`, so it loads after parse; defer'd
-  // scripts fire DOMContentLoaded handlers, so we hook in there. If it
-  // somehow loads later we also retry once on window load.
-  document.addEventListener('DOMContentLoaded', renderHostedQR);
-  window.addEventListener('load', renderHostedQR);
 
   // chat preview animation loop — replays the message sequence
   // every ~10s so the hero feels alive. Respects reduced-motion.
