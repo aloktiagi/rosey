@@ -1237,7 +1237,16 @@ def reconcile() -> None:
         assignees: list[tuple[str, str | None]] = []
         for raw_n in raw_mentions:
             lower = raw_n.lower()
-            display_name = canonical_name.get(lower, raw_n)
+            # Skip unresolved mentions entirely. The agent occasionally
+            # invents pseudo-addressees like `@g` (meaning "the group")
+            # — including those in `assignees` leaks the literal "g" into
+            # user-facing reminder text via `_format_assignee_html`. The
+            # addressee-routing logic further down still handles the line
+            # correctly (via from: fallback or all_idents), so dropping
+            # unresolved names here only affects the display attribution.
+            if lower not in canonical_name:
+                continue
+            display_name = canonical_name[lower]
             # Use the FIRST telegram identifier for the mention link, if
             # any. Multi-channel members (tg + wa) get linked via their
             # tg id — WhatsApp doesn't support inline mentions the same way.

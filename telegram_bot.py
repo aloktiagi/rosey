@@ -384,9 +384,17 @@ async def _on_text(update, context):
     async with _chat_locks[chat.id]:
         try:
             reply = await _run_agent(sender_id, text, origin_chat)
-        except Exception:
-            log.exception("agent failure for %s", sender_id)
-            reply = "Something went wrong. Try again in a moment."
+        except Exception as e:
+            err_cls = type(e).__name__
+            if "Overloaded" in err_cls or "529" in str(e):
+                log.warning("claude API overloaded for %s — %s", sender_id, e)
+                reply = (
+                    "Claude's API is temporarily overloaded — give me a minute "
+                    "and try again. (This isn't your fault; it's upstream.)"
+                )
+            else:
+                log.exception("agent failure for %s", sender_id)
+                reply = "Something went wrong. Try again in a moment."
 
     if reply:
         await update.message.reply_text(reply)
@@ -427,9 +435,16 @@ async def _on_photo(update, context):
             f"tg:{chat_id}", caption,
             image_b64=image_b64, image_mime="image/jpeg",
         )
-    except Exception:
-        log.exception("agent failure for tg:%s (photo)", chat_id)
-        reply = "Something went wrong. Try again in a moment."
+    except Exception as e:
+        err_cls = type(e).__name__
+        if "Overloaded" in err_cls or "529" in str(e):
+            log.warning("claude API overloaded for tg:%s (photo) — %s", chat_id, e)
+            reply = (
+                "Claude's API is temporarily overloaded — try again in a minute."
+            )
+        else:
+            log.exception("agent failure for tg:%s (photo)", chat_id)
+            reply = "Something went wrong. Try again in a moment."
 
     if reply:
         await update.message.reply_text(reply)
@@ -491,9 +506,16 @@ async def _on_voice(update, context):
     async with _chat_locks[chat.id]:
         try:
             reply = await _run_agent(sender_id, transcript, origin_chat)
-        except Exception:
-            log.exception("agent failure for %s (voice)", sender_id)
-            reply = "Something went wrong. Try again in a moment."
+        except Exception as e:
+            err_cls = type(e).__name__
+            if "Overloaded" in err_cls or "529" in str(e):
+                log.warning("claude API overloaded for %s (voice) — %s", sender_id, e)
+                reply = (
+                    "Claude's API is temporarily overloaded — try again in a minute."
+                )
+            else:
+                log.exception("agent failure for %s (voice)", sender_id)
+                reply = "Something went wrong. Try again in a moment."
 
     if reply:
         await update.message.reply_text(reply)

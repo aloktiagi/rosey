@@ -162,11 +162,17 @@ async def handle_baileys_event(payload: dict) -> None:
           "is_group":     true|false,
           "text":         "the message body",
           "push_name":    "Sunanda" | null,
-          "timestamp":    1731000000
+          "timestamp":    1731000000,
+          "image_b64":    "<base64 bytes>" | null,   # optional image attachment
+          "image_mime":   "image/jpeg" | null,
         }
     """
     text = (payload.get("text") or "").strip()
-    if not text:
+    image_b64 = payload.get("image_b64")
+    image_mime = payload.get("image_mime")
+    # Image-only messages with no caption are valid: the agent will see the
+    # image via vision and reply. Bail out only if both are missing.
+    if not text and not image_b64:
         return
     sender_phone = payload.get("sender_phone") or ""
     chat_jid = payload.get("chat_jid") or ""
@@ -196,7 +202,18 @@ async def handle_baileys_event(payload: dict) -> None:
     # every group message burns an agent turn and Claude inconsistently
     # decides whether to reply — which is the same bug the Telegram path
     # solved with `_bot_addressed` + `gate.should_respond_in_group`.
+    #
+    # Image-only group messages with no caption are dropped at the gate:
+    # we have no text to classify, and "someone posted a photo in the
+    # family group" almost never means "Rosey, look at this". If you want
+    # Rosey to see a picture in a group, include a caption mentioning her.
     if is_group:
+        if not text:
+            log.info(
+                "baileys: group msg from=%s ignored (image-only, no caption to gate)",
+                sender_phone,
+            )
+            return
         import gate
         should_respond, cleaned = await asyncio.to_thread(
             gate.classify_group_message, text,
@@ -210,17 +227,30 @@ async def handle_baileys_event(payload: dict) -> None:
         text = cleaned or text  # strip the name prefix if one was matched
 
     log.info(
-        "baileys: msg from=%s in=%s text_len=%d",
-        sender_phone, "group" if is_group else "dm", len(text),
+        "baileys: msg from=%s in=%s text_len=%d has_image=%s",
+        sender_phone, "group" if is_group else "dm", len(text), bool(image_b64),
     )
 
     try:
         reply = await asyncio.to_thread(
             handle_message, sender_id, text, origin_chat=origin_chat,
+            image_b64=image_b64, image_mime=image_mime,
         )
-    except Exception:
-        log.exception("baileys: agent failure for %s", sender_id)
-        reply = "Something went wrong. Try again in a moment."
+    except Exception as e:
+        # Distinguish Anthropic-side overload (transient, retryable) from
+        # other failures (likely a code bug). Different user-facing
+        # messages so the family knows whether to wait and try again or
+        # to flag a real problem.
+        err_cls = type(e).__name__
+        if "Overloaded" in err_cls or "529" in str(e):
+            log.warning("baileys: claude API overloaded for %s — %s", sender_id, e)
+            reply = (
+                "Claude's API is temporarily overloaded — give me a minute "
+                "and try again. (This isn't your fault; it's upstream.)"
+            )
+        else:
+            log.exception("baileys: agent failure for %s", sender_id)
+            reply = "Something went wrong. Try again in a moment."
 
     # Empty reply = agent decided not to respond (fuzzy gate said NO,
     # or other intentional silence). Don't post anything.

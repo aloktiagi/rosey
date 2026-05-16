@@ -47,6 +47,7 @@ const {
   fetchLatestBaileysVersion,
   isJidGroup,
   isJidUser,
+  downloadMediaMessage,
 } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
@@ -61,6 +62,11 @@ const PYTHON_INBOUND_URL =
 const BRIDGE_PORT = parseInt(process.env.BAILEYS_BRIDGE_PORT || '3001', 10);
 const BRIDGE_SECRET = process.env.BAILEYS_BRIDGE_SECRET || '';
 const AUTH_DIR = process.env.BAILEYS_AUTH_DIR || '/data/baileys-session';
+// Hard cap on inbound image size we forward to Python (and onward to
+// Anthropic). Anthropic's per-image limit is ~5MB base64-encoded, so we
+// guard at ~4MB raw to leave headroom. Bigger images get dropped with a
+// log line; the user gets a polite "image too large" reply via Python.
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
 if (!BRIDGE_SECRET) {
   // Refuse to start without a secret — the loopback HTTP server is
@@ -242,15 +248,100 @@ async function start() {
       // Extract text. WhatsApp message bodies live in different fields
       // depending on type (regular text, extended text with quoted reply,
       // image with caption, etc.). We handle the common text-bearing ones.
+      const imageMessage = m.message?.imageMessage || null;
       const text =
         m.message?.conversation ||
         m.message?.extendedTextMessage?.text ||
-        m.message?.imageMessage?.caption ||
+        imageMessage?.caption ||
         m.message?.videoMessage?.caption ||
         '';
-      if (!text) {
+      // Skip iff there's nothing actionable: no text AND no image. Audio,
+      // video, locations etc. still get dropped here for v1.
+      if (!text && !imageMessage) {
         log.info({ msgId: m.key.id, type: Object.keys(m.message || {})[0] }, 'inbound non-text — skipping');
         continue;
+      }
+
+      // If the message carries an image, download it via Baileys' built-in
+      // media downloader and base64-encode for forwarding to Python.
+      // Audio/video/document media are deliberately not handled here —
+      // only images, which Claude can read natively via vision.
+      let imageB64 = null;
+      let imageMime = null;
+      if (imageMessage) {
+        try {
+          const buf = await downloadMediaMessage(m, 'buffer', {}, {
+            // Baileys needs a logger and the socket's reuploadRequest in
+            // case the original media is no longer cached on WhatsApp's
+            // servers and has to be re-requested.
+            logger: log,
+            reuploadRequest: sock.updateMediaMessage,
+          });
+          if (buf && buf.length > MAX_IMAGE_BYTES) {
+            log.warn(
+              { msgId: m.key.id, bytes: buf.length, cap: MAX_IMAGE_BYTES },
+              'image exceeds size cap — dropping image, keeping caption only'
+            );
+          } else if (buf && buf.length > 0) {
+            imageB64 = buf.toString('base64');
+            imageMime = imageMessage.mimetype || 'image/jpeg';
+            log.info(
+              { msgId: m.key.id, bytes: buf.length, mime: imageMime },
+              'downloaded inbound image'
+            );
+          }
+        } catch (err) {
+          // Don't drop the whole message — the caption (if any) is still
+          // worth forwarding so the user gets some kind of response.
+          log.warn(
+            { msgId: m.key.id, err: err.message },
+            'image download failed — forwarding caption only'
+          );
+        }
+        // If after all that we have neither text nor image bytes, bail out
+        // rather than send Python an empty payload.
+        if (!text && !imageB64) {
+          log.info({ msgId: m.key.id }, 'image-only message had no caption and download failed — skipping');
+          continue;
+        }
+      }
+
+      // Resolve self-mentions before forwarding. When a user does a formal
+      // @-mention of the bot in WhatsApp, the displayed text shows "@Rosey"
+      // but the raw text payload Baileys exposes is `@<digits>` — either
+      // the bot's phone (legacy) or LID (current). Python's gate looks for
+      // the literal prefix "rosey" / "@rosey", so without this rewrite
+      // formal @-mentions of the bot get dropped by the gate.
+      //
+      // Strategy: pull mentionedJid from the message's contextInfo, check
+      // if any mention matches the bot's own phone or LID, and replace
+      // the `@<digits>` token in the text with the literal "@rosey".
+      let processedText = text;
+      const mentionedJids =
+        m.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+      const selfIds = new Set();
+      if (sock.user?.id) {
+        selfIds.add(sock.user.id.split('@')[0].split(':')[0]);
+      }
+      if (sock.user?.lid) {
+        selfIds.add(sock.user.lid.split('@')[0].split(':')[0]);
+      }
+      let rewrote = false;
+      for (const jid of mentionedJids) {
+        const id = jid.split('@')[0].split(':')[0];
+        if (selfIds.has(id)) {
+          processedText = processedText.replace(
+            new RegExp(`@${id}\\b`, 'g'),
+            '@rosey'
+          );
+          rewrote = true;
+        }
+      }
+      if (rewrote) {
+        log.info(
+          { msgId: m.key.id, original_len: text.length, processed_len: processedText.length },
+          'rewrote bot @-mention digits to @rosey'
+        );
       }
 
       const remoteJid = m.key.remoteJid; // group JID or DM JID
@@ -266,13 +357,22 @@ async function start() {
         sender_jid: senderJid,
         chat_jid: remoteJid,                 // where to reply (group or DM)
         is_group: !!isGroup,
-        text,
+        text: processedText,
         timestamp: m.messageTimestamp,
         // Pass a hint to Python on which name to attribute, if available
         push_name: m.pushName || null,
+        // Optional image attachment — Python forwards these straight into
+        // Anthropic's vision input alongside the text body.
+        image_b64: imageB64,
+        image_mime: imageMime,
       };
       log.info(
-        { sender: senderPhone, group: isGroup, len: text.length },
+        {
+          sender: senderPhone,
+          group: isGroup,
+          len: text.length,
+          has_image: !!imageB64,
+        },
         'inbound msg'
       );
       const status = await postToPython(payload);
