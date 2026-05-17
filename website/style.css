@@ -171,7 +171,7 @@
 
     /* ─── hero illustration: animated phone mockup ────────── */
     .chat-preview {
-      margin: 56px auto 0;
+      margin: 56px auto 48px;
       max-width: 380px;
     }
     .phone-frame {
@@ -877,4 +877,27 @@
     .signup-step-label .step-optional {
       color: var(--ink-faint);
       font-weight: 400;
+    }
+
+    /* ─── mobile polish ───────────────────────────────────
+       The page is otherwise mostly fluid (clamp() typography,
+       grids that already collapse to 1-col at 900px). These rules
+       just tighten vertical rhythm and padding on phone-sized
+       viewports so the hero doesn't feel airy and the path cards
+       stop truncating their copy. */
+    @media (max-width: 720px) {
+      .hero { padding: 56px 0 48px; }
+      section { padding: 64px 0; }
+      .chat-preview { margin: 32px auto 36px; }
+      .phone-screen { min-height: auto; padding: 30px 14px 18px; }
+      .path-card { padding: 28px 22px; }
+      .hosted-qr { padding: 16px; gap: 16px; }
+      h2 { font-size: clamp(28px, 5vw, 40px) !important; }
+    }
+    @media (max-width: 420px) {
+      .hero { padding: 40px 0 36px; }
+      .chat-preview { margin: 24px auto 28px; max-width: 100%; }
+      .path-card { padding: 24px 18px; }
+      .signup-form button { flex: 1 1 100%; justify-content: center; }
+      .wrap { padding: 0 18px; }
     }
