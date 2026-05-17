@@ -27,14 +27,19 @@ from tools import default_tools
 
 log = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-6"
+# Default model is Sonnet 4.6 — fast, capable, cheap. Overridable via
+# the ROSEY_MODEL env var so operators can swap to a different model
+# (e.g. claude-opus-4-7) during an Anthropic capacity incident without
+# a code change or redeploy. The model string is passed straight to
+# `client.beta.messages.create(model=...)`.
+MODEL = os.environ.get("ROSEY_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = 2048
 # 4 client-side iterations is enough for the typical household task
 # (view-or-skip → read-target → write-update → reply). Server-side
 # web_search/web_fetch don't count against this — they iterate inside
 # a single API call. Lowered from 8 to cut worst-case latency and
 # ITPM blast radius when the agent thrashes on a tool error.
-MAX_TOOL_ITERATIONS = 4
+MAX_TOOL_ITERATIONS = 6
 THREAD_TAIL_CHARS = 4000  # how much recent thread to inject as context
 THREAD_FILE_CAP_BYTES = 50_000  # trim oldest when exceeded
 MEMORY_INDEX_MAX_ENTRIES = 40  # cap the dir snapshot inlined into the prompt
@@ -282,7 +287,24 @@ overwrite an existing file with `create` — you'd lose all history.
 
 Names after @ must match the names listed in household.md exactly
 (case-insensitive). If the request doesn't name anyone specific, omit the
-@ mentions and everyone in the household will be reminded.
+@ mentions entirely — DO NOT invent a pseudo-addressee. Specifically:
+
+  NEVER write @g, @group, @everyone, @all, @us, @family, @household, or
+  any other handle that isn't a real person's name in household.md.
+
+A request like "remind us to take out the trash" or "remind everyone
+about the pediatrician" maps to a line with NO @-mentions:
+
+  Correct:   - [2026-05-15 09:00] take out the trash from:{origin_chat} urg:normal
+  Wrong:     - [2026-05-15 09:00] take out the trash @g from:{origin_chat} urg:normal
+  Wrong:     - [2026-05-15 09:00] take out the trash @everyone from:{origin_chat} urg:normal
+
+When no @-names are present, the scheduler fans out to every member of
+the household automatically. That's the right way to address "us" /
+"everyone" / "the family." Adding a fake @-mention just leaks the
+literal handle into the user-facing reminder text ("Reminder for @g:
+take out the trash") and triggers an unknown-mention warning in the
+reconciler.
 
 ALWAYS end the line with `from:{origin_chat}` — this is the chat where
 the reminder was created. The scheduler uses it as a fallback recipient
@@ -397,11 +419,80 @@ occurrence. No recurrence DSL. This makes editing one occurrence easy
 and keeps the file human-readable.
 
 Reply guidance:
-- Be concise. Telegram replies should usually fit under 200 characters.
+- Be concise by default, but never at the cost of clarity. Most replies
+  fit comfortably under ~300 characters; confirmation replies that
+  include an updated list are allowed to be longer.
 - If you searched the web, summarize — don't dump full results.
 - For research questions ("find a plumber"), present at most 3 options
   with name + phone + 1-line "why".
 - If a request is ambiguous, ask ONE clarifying question.
+
+Confirm what you did — always. Whenever you change shared state, your
+reply must (a) state what you changed in one short line, AND (b) show
+the resulting state so the family can see the outcome without having
+to ask. Silent or vague confirmations ("done", "added") are not enough
+— they leave the user wondering whether it actually worked, whether you
+captured it correctly, or whether other items got affected.
+
+Concrete rules by surface:
+
+- Grocery list (/memories/groceries/list.md): after adding, removing,
+  marking bought, or reordering items, reply with the action taken AND
+  the current full list. Example:
+    "Added eggs and milk. List now (8):
+     • Onion
+     • Tomato
+     • Eggs
+     • Milk
+     • …"
+  Use a bulleted list with the item count in the header. If the list
+  is empty after a removal, say so explicitly ("List is now empty.").
+
+- Reminders (/memories/reminders.md): after creating, editing, or
+  cancelling a reminder, echo the resulting line in human-readable
+  form (date, time, who, what). Example:
+    "Set: reminder for Sunanda tomorrow at 9am — pediatrician
+     appointment. Anything else to add to it?"
+  For a cancellation: "Cancelled the 6pm yoga reminder for Friday."
+  For an edit: "Updated — now firing at 8am instead of 9am."
+
+- Events (/memories/events.md): after adding, editing, or removing,
+  echo the resulting line and (if relevant) note the next 1–2 nearby
+  events for context. Example:
+    "Added: piano lesson @Avery Tuesday 17:00–18:00 — Music Studio.
+     Nothing else booked that afternoon."
+
+- Knowledge (/memories/knowledge/<topic>.md): after recording or
+  updating a fact, restate the fact you stored in your reply, so the
+  user can spot mistakes. Example:
+    "Got it — pediatrician is Dr. Chen, (415) 555-0188, UCSF
+     Mission Bay. Saved under pediatrician.md."
+
+- Household roster (/memories/household.md): after adding/editing a
+  member or preference, restate the change. Example:
+    "Added Anuj (tg:+15554440000). He's now in the roster."
+
+- Pantry (/memories/pantry.md): same pattern as groceries — action
+  line plus the relevant section after the change.
+
+- Threads / conversation history (/memories/threads/...): you manage
+  these implicitly; don't surface changes to the user.
+
+General proactivity rules:
+- When you take an action without being asked (e.g. you noticed a
+  conflict and moved an event, you archived an old reminder, you
+  inferred a date from context), say so — never let the user discover
+  a silent change later. Lead with "FYI I also…" or "Heads-up — I
+  moved X because Y".
+- When a request resolves multiple things at once ("we bought
+  everything", "cancel all reminders for today"), report each
+  affected item, not just an aggregate count.
+- When a user replies ambiguously after an action ("yep", "no thanks"),
+  confirm what you understood them to mean and what state results.
+  Example: user says "ok thanks" after a reminder fired — reply
+  "Marked the 6pm yoga reminder as done."
+- When you DECLINE to do something (out of scope, ambiguous, unsafe),
+  say so explicitly and explain the next step — never go silent.
 
 Keep memory files clean. Use str_replace to update existing entries rather
 than appending duplicates. Never make up facts or seed example data — only
@@ -583,7 +674,15 @@ def _append_thread(path: Path, today: str, body: str, reply: str) -> None:
 
 
 def _client() -> Anthropic:
-    return Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    # max_retries=4 (default is 2) — Anthropic's API can return 529
+    # Overloaded transiently during peak hours. The SDK applies
+    # exponential backoff between retries (0.5s, 1s, 2s, 4s), so a
+    # genuine 30-60s API hiccup is invisibly absorbed instead of
+    # surfacing as a user-facing "something went wrong" message.
+    return Anthropic(
+        api_key=os.environ["ANTHROPIC_API_KEY"],
+        max_retries=4,
+    )
 
 
 def _local_clock() -> tuple:
@@ -829,6 +928,35 @@ def handle_message(
     else:
         capped = True
         log.warning("turn=%s hit MAX_TOOL_ITERATIONS for from=%s", turn_id, from_phone)
+        # When the cap is hit, the last `response` is typically a tool_use
+        # block with no text content — leaving the user with an empty
+        # reply. Force a final summary call without tools so the model
+        # has to produce text describing what it completed and what's
+        # still pending. One extra API call; predictable cost.
+        messages.append({
+            "role": "user",
+            "content": (
+                "Your tool budget for this turn is exhausted. "
+                "Reply now with a short plain-text summary: what you "
+                "completed, and what's still pending (so the user "
+                "can follow up). Do NOT use any tools — just text."
+            ),
+        })
+        try:
+            response = client.beta.messages.create(
+                model=MODEL,
+                max_tokens=MAX_TOKENS,
+                system=cached_system,
+                messages=messages,
+                # tools intentionally omitted — forces a text response.
+            )
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                in_tokens += getattr(usage, "input_tokens", 0) or 0
+                out_tokens += getattr(usage, "output_tokens", 0) or 0
+                cache_read += getattr(usage, "cache_read_input_tokens", 0) or 0
+        except Exception:
+            log.exception("turn=%s capped-summary call failed", turn_id)
 
     reply = _extract_text(response.content) if response else ""
     dt_ms = int((time.monotonic() - t_start) * 1000)

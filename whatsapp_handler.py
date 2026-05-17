@@ -162,15 +162,58 @@ async def handle_baileys_event(payload: dict) -> None:
           "is_group":     true|false,
           "text":         "the message body",
           "push_name":    "Sunanda" | null,
-          "timestamp":    1731000000
+          "timestamp":    1731000000,
+          "image_b64":    "<base64 bytes>" | null,   # optional image attachment
+          "image_mime":   "image/jpeg" | null,
+          "audio_b64":    "<base64 bytes>" | null,   # optional voice note
+          "audio_mime":   "audio/ogg; codecs=opus" | null,
         }
     """
     text = (payload.get("text") or "").strip()
-    if not text:
+    image_b64 = payload.get("image_b64")
+    image_mime = payload.get("image_mime")
+    audio_b64 = payload.get("audio_b64")
+    audio_mime = payload.get("audio_mime")
+    # Image-only messages with no caption are valid: the agent sees the
+    # image via vision. Audio-only is also valid: we'll transcribe via
+    # Whisper below. Bail only if all three are missing.
+    if not text and not image_b64 and not audio_b64:
         return
     sender_phone = payload.get("sender_phone") or ""
     chat_jid = payload.get("chat_jid") or ""
     is_group = bool(payload.get("is_group"))
+
+    # Voice note? Run it through Whisper. Baileys has already gated
+    # groups (only reply-to-bot voice notes arrive here), so we trust
+    # the audio is intentional and transcribe unconditionally. The
+    # transcript becomes the agent's input text.
+    if audio_b64:
+        import base64 as _base64
+        import transcribe
+        try:
+            audio_bytes = _base64.b64decode(audio_b64)
+            transcript = await asyncio.to_thread(
+                transcribe.transcribe_audio,
+                audio_bytes,
+                audio_mime or "audio/ogg",
+            )
+            transcript = (transcript or "").strip()
+        except Exception:
+            log.exception("baileys: whisper failed for %s", sender_phone)
+            transcript = ""
+        if transcript:
+            # If the WhatsApp message somehow had BOTH text and audio
+            # (rare), keep the user's typed text first and append the
+            # transcript on a new line so the agent sees both.
+            text = f"{text}\n{transcript}".strip() if text else transcript
+            log.info(
+                "baileys: transcribed voice note from=%s len=%d",
+                sender_phone, len(transcript),
+            )
+        elif not text and not image_b64:
+            # Empty transcript (Whisper failed or audio was silent) and
+            # nothing else on the message — nothing for the agent to do.
+            return
 
     # Canonical sender identifier — the human who actually spoke.
     sender_id = f"wa:+{sender_phone}"
@@ -196,7 +239,18 @@ async def handle_baileys_event(payload: dict) -> None:
     # every group message burns an agent turn and Claude inconsistently
     # decides whether to reply — which is the same bug the Telegram path
     # solved with `_bot_addressed` + `gate.should_respond_in_group`.
+    #
+    # Image-only group messages with no caption are dropped at the gate:
+    # we have no text to classify, and "someone posted a photo in the
+    # family group" almost never means "Rosey, look at this". If you want
+    # Rosey to see a picture in a group, include a caption mentioning her.
     if is_group:
+        if not text:
+            log.info(
+                "baileys: group msg from=%s ignored (image-only, no caption to gate)",
+                sender_phone,
+            )
+            return
         import gate
         should_respond, cleaned = await asyncio.to_thread(
             gate.classify_group_message, text,
@@ -210,17 +264,31 @@ async def handle_baileys_event(payload: dict) -> None:
         text = cleaned or text  # strip the name prefix if one was matched
 
     log.info(
-        "baileys: msg from=%s in=%s text_len=%d",
+        "baileys: msg from=%s in=%s text_len=%d has_image=%s has_audio=%s",
         sender_phone, "group" if is_group else "dm", len(text),
+        bool(image_b64), bool(audio_b64),
     )
 
     try:
         reply = await asyncio.to_thread(
             handle_message, sender_id, text, origin_chat=origin_chat,
+            image_b64=image_b64, image_mime=image_mime,
         )
-    except Exception:
-        log.exception("baileys: agent failure for %s", sender_id)
-        reply = "Something went wrong. Try again in a moment."
+    except Exception as e:
+        # Distinguish Anthropic-side overload (transient, retryable) from
+        # other failures (likely a code bug). Different user-facing
+        # messages so the family knows whether to wait and try again or
+        # to flag a real problem.
+        err_cls = type(e).__name__
+        if "Overloaded" in err_cls or "529" in str(e):
+            log.warning("baileys: claude API overloaded for %s — %s", sender_id, e)
+            reply = (
+                "Claude's API is temporarily overloaded — give me a minute "
+                "and try again. (This isn't your fault; it's upstream.)"
+            )
+        else:
+            log.exception("baileys: agent failure for %s", sender_id)
+            reply = "Something went wrong. Try again in a moment."
 
     # Empty reply = agent decided not to respond (fuzzy gate said NO,
     # or other intentional silence). Don't post anything.

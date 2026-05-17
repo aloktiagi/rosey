@@ -32,7 +32,7 @@ fi
 
 echo "[start] launching hypercorn"
 hypercorn server:asgi_app \
-  --bind 0.0.0.0:8080 \
+  --bind "[::]:8080" \
   --access-logfile - \
   --error-logfile - &
 HYPERCORN_PID=$!
