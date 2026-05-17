@@ -271,7 +271,16 @@ async def handle_baileys_event(payload: dict) -> None:
                     sender_phone, len(text),
                 )
                 return
-            text = cleaned or text  # strip the name prefix if one was matched
+            text = cleaned or text  # strip leading name prefix if any
+        # Strip any remaining @rosey self-mentions so the agent doesn't
+        # try to look "rosey" up as a household member. Catches:
+        #   - trailing addressings: "do X @rosey"
+        #   - inline: "tell @rosey to do X"  (rare but possible)
+        # The Baileys layer has already normalized "@<bot-digits>" → "@rosey".
+        import re
+        text = re.sub(
+            r"\s*@rosey\b[\s,:.;!?]*", " ", text, flags=re.IGNORECASE
+        ).strip()
 
     log.info(
         "baileys: msg from=%s in=%s text_len=%d has_image=%s has_audio=%s",
