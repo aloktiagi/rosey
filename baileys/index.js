@@ -67,6 +67,11 @@ const AUTH_DIR = process.env.BAILEYS_AUTH_DIR || '/data/baileys-session';
 // guard at ~4MB raw to leave headroom. Bigger images get dropped with a
 // log line; the user gets a polite "image too large" reply via Python.
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+// Hard cap on inbound audio size. OpenAI Whisper's documented limit is
+// 25MB; we cap at 16MB raw to leave headroom for the multipart upload.
+// At typical WhatsApp Opus bitrate (~24kbps), 16MB is ~90 minutes of
+// audio — well above any realistic voice memo.
+const MAX_AUDIO_BYTES = 16 * 1024 * 1024;
 
 if (!BRIDGE_SECRET) {
   // Refuse to start without a secret — the loopback HTTP server is
@@ -249,17 +254,31 @@ async function start() {
       // depending on type (regular text, extended text with quoted reply,
       // image with caption, etc.). We handle the common text-bearing ones.
       const imageMessage = m.message?.imageMessage || null;
+      const audioMessage = m.message?.audioMessage || null;
       const text =
         m.message?.conversation ||
         m.message?.extendedTextMessage?.text ||
         imageMessage?.caption ||
         m.message?.videoMessage?.caption ||
         '';
-      // Skip iff there's nothing actionable: no text AND no image. Audio,
-      // video, locations etc. still get dropped here for v1.
-      if (!text && !imageMessage) {
+      // Skip iff there's nothing actionable: no text, no image, no audio.
+      // Video, locations, contacts etc. still get dropped here for v1.
+      if (!text && !imageMessage && !audioMessage) {
         log.info({ msgId: m.key.id, type: Object.keys(m.message || {})[0] }, 'inbound non-text — skipping');
         continue;
+      }
+
+      // Compute the bot's own JID prefix(es) — used for both self-mention
+      // rewriting (further down) and the audio-reply gate below. WhatsApp
+      // accounts have both a legacy phone-number JID and a privacy-mode
+      // "LID"; either can show up in mentioned/quoted refs depending on
+      // the chat type.
+      const selfIds = new Set();
+      if (sock.user?.id) {
+        selfIds.add(sock.user.id.split('@')[0].split(':')[0]);
+      }
+      if (sock.user?.lid) {
+        selfIds.add(sock.user.lid.split('@')[0].split(':')[0]);
       }
 
       // If the message carries an image, download it via Baileys' built-in
@@ -300,8 +319,66 @@ async function start() {
         }
         // If after all that we have neither text nor image bytes, bail out
         // rather than send Python an empty payload.
-        if (!text && !imageB64) {
+        if (!text && !imageB64 && !audioMessage) {
           log.info({ msgId: m.key.id }, 'image-only message had no caption and download failed — skipping');
+          continue;
+        }
+      }
+
+      // Audio handling: download Opus/MP3/M4A voice notes for Whisper.
+      //
+      // Group gate: only forward audio when it's a quoted reply to one
+      // of the bot's own messages. There's no audio @-mention to detect,
+      // so without this gate every family voice note in the group would
+      // burn a Whisper call. Mirrors the Telegram path's
+      // `_voice_addressed_in_group` reply-to-bot trigger.
+      //
+      // DMs: always process — the user clearly intended to address the
+      // bot when they sent a voice note 1-on-1.
+      let audioB64 = null;
+      let audioMime = null;
+      if (audioMessage) {
+        let allowAudio = true;
+        if (isJidGroup(m.key.remoteJid)) {
+          const quotedParticipant = audioMessage.contextInfo?.participant || '';
+          const quotedId = quotedParticipant.split('@')[0].split(':')[0];
+          const isReplyToBot = quotedId && selfIds.has(quotedId);
+          if (!isReplyToBot) {
+            log.info(
+              { msgId: m.key.id },
+              'group audio note is not a reply to bot — skipping'
+            );
+            allowAudio = false;
+          }
+        }
+        if (allowAudio) {
+          try {
+            const buf = await downloadMediaMessage(m, 'buffer', {}, {
+              logger: log,
+              reuploadRequest: sock.updateMediaMessage,
+            });
+            if (buf && buf.length > MAX_AUDIO_BYTES) {
+              log.warn(
+                { msgId: m.key.id, bytes: buf.length, cap: MAX_AUDIO_BYTES },
+                'audio exceeds size cap — dropping'
+              );
+            } else if (buf && buf.length > 0) {
+              audioB64 = buf.toString('base64');
+              audioMime = audioMessage.mimetype || 'audio/ogg; codecs=opus';
+              log.info(
+                { msgId: m.key.id, bytes: buf.length, mime: audioMime },
+                'downloaded inbound audio'
+              );
+            }
+          } catch (err) {
+            log.warn(
+              { msgId: m.key.id, err: err.message },
+              'audio download failed — skipping'
+            );
+          }
+        }
+        // If nothing else is on the message and audio fell through, bail.
+        if (!text && !imageB64 && !audioB64) {
           continue;
         }
       }
@@ -319,13 +396,6 @@ async function start() {
       let processedText = text;
       const mentionedJids =
         m.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
-      const selfIds = new Set();
-      if (sock.user?.id) {
-        selfIds.add(sock.user.id.split('@')[0].split(':')[0]);
-      }
-      if (sock.user?.lid) {
-        selfIds.add(sock.user.lid.split('@')[0].split(':')[0]);
-      }
       let rewrote = false;
       for (const jid of mentionedJids) {
         const id = jid.split('@')[0].split(':')[0];
@@ -365,6 +435,10 @@ async function start() {
         // Anthropic's vision input alongside the text body.
         image_b64: imageB64,
         image_mime: imageMime,
+        // Optional audio attachment — Python pipes through Whisper and
+        // uses the transcript as the message text for the agent.
+        audio_b64: audioB64,
+        audio_mime: audioMime,
       };
       log.info(
         {
@@ -372,6 +446,7 @@ async function start() {
           group: isGroup,
           len: text.length,
           has_image: !!imageB64,
+          has_audio: !!audioB64,
         },
         'inbound msg'
       );

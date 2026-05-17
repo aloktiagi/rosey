@@ -165,18 +165,55 @@ async def handle_baileys_event(payload: dict) -> None:
           "timestamp":    1731000000,
           "image_b64":    "<base64 bytes>" | null,   # optional image attachment
           "image_mime":   "image/jpeg" | null,
+          "audio_b64":    "<base64 bytes>" | null,   # optional voice note
+          "audio_mime":   "audio/ogg; codecs=opus" | null,
         }
     """
     text = (payload.get("text") or "").strip()
     image_b64 = payload.get("image_b64")
     image_mime = payload.get("image_mime")
-    # Image-only messages with no caption are valid: the agent will see the
-    # image via vision and reply. Bail out only if both are missing.
-    if not text and not image_b64:
+    audio_b64 = payload.get("audio_b64")
+    audio_mime = payload.get("audio_mime")
+    # Image-only messages with no caption are valid: the agent sees the
+    # image via vision. Audio-only is also valid: we'll transcribe via
+    # Whisper below. Bail only if all three are missing.
+    if not text and not image_b64 and not audio_b64:
         return
     sender_phone = payload.get("sender_phone") or ""
     chat_jid = payload.get("chat_jid") or ""
     is_group = bool(payload.get("is_group"))
+
+    # Voice note? Run it through Whisper. Baileys has already gated
+    # groups (only reply-to-bot voice notes arrive here), so we trust
+    # the audio is intentional and transcribe unconditionally. The
+    # transcript becomes the agent's input text.
+    if audio_b64:
+        import base64 as _base64
+        import transcribe
+        try:
+            audio_bytes = _base64.b64decode(audio_b64)
+            transcript = await asyncio.to_thread(
+                transcribe.transcribe_audio,
+                audio_bytes,
+                audio_mime or "audio/ogg",
+            )
+            transcript = (transcript or "").strip()
+        except Exception:
+            log.exception("baileys: whisper failed for %s", sender_phone)
+            transcript = ""
+        if transcript:
+            # If the WhatsApp message somehow had BOTH text and audio
+            # (rare), keep the user's typed text first and append the
+            # transcript on a new line so the agent sees both.
+            text = f"{text}\n{transcript}".strip() if text else transcript
+            log.info(
+                "baileys: transcribed voice note from=%s len=%d",
+                sender_phone, len(transcript),
+            )
+        elif not text and not image_b64:
+            # Empty transcript (Whisper failed or audio was silent) and
+            # nothing else on the message — nothing for the agent to do.
+            return
 
     # Canonical sender identifier — the human who actually spoke.
     sender_id = f"wa:+{sender_phone}"
@@ -227,8 +264,9 @@ async def handle_baileys_event(payload: dict) -> None:
         text = cleaned or text  # strip the name prefix if one was matched
 
     log.info(
-        "baileys: msg from=%s in=%s text_len=%d has_image=%s",
-        sender_phone, "group" if is_group else "dm", len(text), bool(image_b64),
+        "baileys: msg from=%s in=%s text_len=%d has_image=%s has_audio=%s",
+        sender_phone, "group" if is_group else "dm", len(text),
+        bool(image_b64), bool(audio_b64),
     )
 
     try:
