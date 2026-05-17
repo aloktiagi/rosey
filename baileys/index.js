@@ -414,6 +414,22 @@ async function start() {
         );
       }
 
+      // Detect quoted-reply-to-bot: when a user swipe-replies to one of
+      // Rosey's messages, WhatsApp puts the quoted message's sender in
+      // contextInfo.participant. Surface this to Python so the group
+      // gate can auto-allow the reply (without it, casual replies like
+      // "got it, give me some recs" get dropped because they don't
+      // start with "rosey"). Matches the natural threading users do.
+      const replyParticipant =
+        m.message?.extendedTextMessage?.contextInfo?.participant ||
+        m.message?.audioMessage?.contextInfo?.participant ||
+        m.message?.imageMessage?.contextInfo?.participant || '';
+      const replyParticipantId = replyParticipant.split('@')[0].split(':')[0];
+      const isReplyToBot = !!replyParticipantId && selfIds.has(replyParticipantId);
+      if (isReplyToBot) {
+        log.info({ msgId: m.key.id }, 'quoted reply to bot — will bypass gate');
+      }
+
       const remoteJid = m.key.remoteJid; // group JID or DM JID
       const isGroup = isJidGroup(remoteJid);
       // For group messages, m.key.participant tells us who actually sent it.
@@ -439,6 +455,9 @@ async function start() {
         // uses the transcript as the message text for the agent.
         audio_b64: audioB64,
         audio_mime: audioMime,
+        // True when this message is a quoted reply to one of Rosey's
+        // own messages — Python bypasses the group gate in that case.
+        is_reply_to_bot: isReplyToBot,
       };
       log.info(
         {
@@ -447,6 +466,7 @@ async function start() {
           len: text.length,
           has_image: !!imageB64,
           has_audio: !!audioB64,
+          reply_to_bot: isReplyToBot,
         },
         'inbound msg'
       );
