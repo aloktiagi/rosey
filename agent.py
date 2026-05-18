@@ -21,7 +21,8 @@ except ImportError:  # pragma: no cover
 
 from anthropic import Anthropic
 
-from memory_tool import FileMemoryTool
+from memory_tool import FileMemoryTool, RedactingMemoryTool
+from redact import Redactor, enabled as redaction_enabled
 from reminder_format import FORMAT_DOC as REMINDER_FORMAT
 from tools import default_tools
 
@@ -157,6 +158,10 @@ For every message:
 4. Reply in 1-2 short sentences confirming what you did or what you found.
 
 Internals & privacy — non-negotiable:
+- Some sensitive values may appear as stable placeholders like
+  <EMAIL_1>, <PHONE_1>, <CREDIT_CARD_1>, or <API_KEY_1>. Treat these as
+  the real underlying values: preserve them exactly when reading,
+  writing, editing, or replying. Never try to guess the hidden value.
 - /memories is YOUR private working storage, not a folder the user can
   browse. NEVER list, enumerate, summarize, or quote file names, paths,
   or directory structure ("I have a household.md, a groceries/list.md,
@@ -512,6 +517,9 @@ no need to call `view /memories` first):
 
 Tools: memory (read/write), web_search, web_fetch.
 
+Some sensitive values may appear as stable placeholders like <EMAIL_1>
+or <PHONE_1>. Treat them as the real values and preserve them exactly.
+
 Read whatever you need from memory, search the web if helpful, then
 respond with the FINAL OUTPUT ONLY — no preamble, no commentary about
 what you're doing. Plain text suitable for sending as a Telegram
@@ -736,11 +744,17 @@ def handle_message(
     to attach a photo. The agent sees the image alongside the text body.
     """
     base = _resolve_base(memory_root)
+    redactor = Redactor.for_memory_base(base) if redaction_enabled() else None
     memory = FileMemoryTool(base_path=base)
+    if redactor is not None:
+        memory = RedactingMemoryTool(memory, redactor)  # type: ignore[assignment]
     now_local, tz_name = _local_clock()
     today = now_local.split(" ", 1)[0]  # YYYY-MM-DD prefix
     memory_index = _build_memory_index(base)
     knowledge_index = _load_knowledge_index(base)
+    if redactor is not None:
+        memory_index = redactor.redact(memory_index)
+        knowledge_index = redactor.redact(knowledge_index)
 
     # If origin_chat wasn't passed (e.g. legacy callers, summary.py), default
     # to the speaker's identifier — DMs are self-originating, and a missing
@@ -751,7 +765,7 @@ def handle_message(
 
     if is_system:
         thread_path = None
-        text_content = body
+        text_content = redactor.redact(body) if redactor is not None else body
         system_prompt = SYSTEM_TASK_PROMPT.format(
             now_local=now_local,
             tz_name=tz_name,
@@ -760,9 +774,11 @@ def handle_message(
     else:
         thread_path = _thread_path(base, from_phone)
         thread_tail = _load_thread_tail(thread_path)
-        text_content = body
+        model_body = redactor.redact(body) if redactor is not None else body
+        text_content = model_body
         if thread_tail:
-            text_content = f"<recent_thread>\n{thread_tail}\n</recent_thread>\n\n{body}"
+            model_thread_tail = redactor.redact(thread_tail) if redactor is not None else thread_tail
+            text_content = f"<recent_thread>\n{model_thread_tail}\n</recent_thread>\n\n{model_body}"
         # Pull recent un-acked fires to this user so casual "ok"/"yep"
         # replies have an obvious target. Lazy import — keeps the agent
         # module importable in test contexts where the scheduler isn't set up.
@@ -784,6 +800,8 @@ def handle_message(
                     + "\n".join(lines)
                     + "\n</recent_fires>"
                 )
+                if redactor is not None:
+                    recent_fires_block = redactor.redact(recent_fires_block)
         except Exception:
             log.exception("recent_fires_for lookup failed for %s", from_phone)
         system_prompt = SYSTEM_PROMPT.format(
@@ -959,6 +977,8 @@ def handle_message(
             log.exception("turn=%s capped-summary call failed", turn_id)
 
     reply = _extract_text(response.content) if response else ""
+    if redactor is not None:
+        reply = redactor.restore(reply)
     dt_ms = int((time.monotonic() - t_start) * 1000)
     log.info(
         "turn=%s from=%s system=%s iters=%d cap=%s stop=%s mem_calls=%d mem_errs=%d "

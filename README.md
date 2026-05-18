@@ -137,6 +137,8 @@ keeps at least one machine running so reminders can fire on time.
 | `OPENAI_API_KEY` | Optional | Enables voice-note transcription. |
 | `BAILEYS_MODE` | Optional | Set to `on` to run the WhatsApp Baileys sidecar. |
 | `BAILEYS_BRIDGE_SECRET` | Optional | Shared secret between the Baileys sidecar and Python server. |
+| `ROSEY_REDACTION` | Optional | Set to `on` to replace common text PII with local placeholders before model calls. |
+| `ROSEY_PII_VAULT` | Optional | Path for the local reversible PII mapping. Defaults to a `pii/vault.json` sibling of `MEMORY_ROOT`. |
 
 See `.env.example` for a starter local environment file.
 

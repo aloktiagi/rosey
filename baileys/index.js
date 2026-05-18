@@ -393,9 +393,20 @@ async function start() {
       // Strategy: pull mentionedJid from the message's contextInfo, check
       // if any mention matches the bot's own phone or LID, and replace
       // the `@<digits>` token in the text with the literal "@rosey".
+      //
+      // WhatsApp puts mentionedJid on whichever message type carries the
+      // text body: extendedTextMessage for plain text, imageMessage /
+      // videoMessage for captioned media. Without checking all three, a
+      // formal @-mention of the bot on a captioned photo never gets
+      // rewritten to "@rosey", and the Python group gate then drops the
+      // message silently because it doesn't see a rosey-prefix in the
+      // text (only the raw `@<bot-digits>` left by WhatsApp).
       let processedText = text;
       const mentionedJids =
-        m.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+        m.message?.extendedTextMessage?.contextInfo?.mentionedJid ||
+        m.message?.imageMessage?.contextInfo?.mentionedJid ||
+        m.message?.videoMessage?.contextInfo?.mentionedJid ||
+        [];
       let rewrote = false;
       for (const jid of mentionedJids) {
         const id = jid.split('@')[0].split(':')[0];

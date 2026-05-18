@@ -11,6 +11,7 @@ passing base_path="." stores everything in ./memories/.
 """
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing_extensions import override
 
@@ -21,6 +22,8 @@ from anthropic.types.beta import (
     BetaMemoryTool20250818InsertCommand,
     BetaMemoryTool20250818StrReplaceCommand,
 )
+
+from redact import Redactor
 
 MAX_FILE_BYTES = 100 * 1024
 MAX_TOTAL_BYTES = 10 * 1024 * 1024
@@ -86,3 +89,48 @@ class FileMemoryTool(BetaLocalFilesystemMemoryTool):
             new_size = existing + len(command.insert_text.encode("utf-8")) + 1
             self._check_size(new_size, target)
         return super().insert(command)
+
+
+class RedactingMemoryTool:
+    """Redacts text crossing the model <-> local memory tool boundary.
+
+    The underlying memory files are stored with placeholders for newly written
+    sensitive values. Tool read results are redacted as a backstop for legacy
+    files that may already contain raw PII.
+    """
+
+    def __init__(self, inner: FileMemoryTool, redactor: Redactor):
+        self.inner = inner
+        self.redactor = redactor
+
+    def to_dict(self) -> dict:
+        return self.inner.to_dict()
+
+    def call(self, command: dict) -> str:
+        redacted = self._redact_command(command)
+        try:
+            result = self.inner.call(redacted)
+        except Exception:
+            fallback = self._legacy_match_command(redacted)
+            if fallback == redacted:
+                raise
+            result = self.inner.call(fallback)
+        return self.redactor.redact(result)
+
+    def _redact_command(self, command: dict) -> dict:
+        redacted = copy.deepcopy(command)
+        for key in ("file_text", "insert_text", "new_str"):
+            if isinstance(redacted.get(key), str):
+                redacted[key] = self.redactor.redact(redacted[key])
+        return redacted
+
+    def _legacy_match_command(self, command: dict) -> dict:
+        """Let str_replace match old raw files after Claude saw redacted text."""
+        if command.get("command") != "str_replace":
+            return command
+        old_str = command.get("old_str")
+        if not isinstance(old_str, str):
+            return command
+        fallback = copy.deepcopy(command)
+        fallback["old_str"] = self.redactor.restore(old_str)
+        return fallback

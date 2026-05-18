@@ -8,6 +8,7 @@ venv/
 .env
 .env.local
 memories/
+pii/
 household.toml
 .claude/
 .pytest_cache/
