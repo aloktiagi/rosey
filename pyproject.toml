@@ -38,4 +38,4 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["memory_tool", "agent", "alexa_handler", "cli", "app", "summary", "household", "reminders", "telegram_bot", "transcribe", "channels", "paths", "reminder_format", "roster", "tools", "scheduler", "gate", "server", "whatsapp_handler"]
+py-modules = ["memory_tool", "agent", "alexa_handler", "cli", "app", "summary", "household", "reminders", "telegram_bot", "transcribe", "channels", "paths", "redact", "reminder_format", "roster", "tools", "scheduler", "gate", "server", "whatsapp_handler"]

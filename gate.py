@@ -32,6 +32,8 @@ import time
 
 from anthropic import Anthropic
 
+from redact import Redactor, enabled as redaction_enabled
+
 log = logging.getLogger("rosey.gate")
 
 # Channel-agnostic name-prefix triggers. A group-chat message that
@@ -184,6 +186,9 @@ def should_respond_in_group(text: str) -> bool:
     error = None
     try:
         client = _get_client()
+        model_text = text
+        if redaction_enabled():
+            model_text = Redactor.for_memory_base().redact(text)
         # Cache the system prompt — same content every call, so iteration N>=2
         # reads from the cache (~10% input cost) and the latency drop is
         # noticeable too. The user message is the only varying part.
@@ -197,7 +202,7 @@ def should_respond_in_group(text: str) -> bool:
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
-            messages=[{"role": "user", "content": f"Message:\n{text}\n\nDecision:"}],
+            messages=[{"role": "user", "content": f"Message:\n{model_text}\n\nDecision:"}],
         )
         raw = "".join(
             b.text for b in response.content if getattr(b, "type", "") == "text"
