@@ -24,6 +24,7 @@ Bias: false positives (Rosey barging into private chat) are worse than
 false negatives (user has to @-mention to get a response). The prompt and
 the fail-closed default both reflect that bias.
 """
+
 from __future__ import annotations
 
 import logging
@@ -120,8 +121,12 @@ def explicit_name_trigger(text: str) -> tuple[bool, str]:
     for prefix in _NAME_PREFIXES:
         if lower == prefix:
             return True, ""
-        if lower.startswith(prefix) and len(candidate) > len(prefix) and candidate[len(prefix)] in " ,:":
-            cleaned = candidate[len(prefix):].lstrip(" ,:").strip()
+        if (
+            lower.startswith(prefix)
+            and len(candidate) > len(prefix)
+            and candidate[len(prefix)] in " ,:"
+        ):
+            cleaned = candidate[len(prefix) :].lstrip(" ,:").strip()
             return True, cleaned
     return False, text
 
@@ -199,9 +204,11 @@ def should_respond_in_group(text: str) -> bool:
             ],
             messages=[{"role": "user", "content": f"Message:\n{text}\n\nDecision:"}],
         )
-        raw = "".join(
-            b.text for b in response.content if getattr(b, "type", "") == "text"
-        ).strip().upper()
+        raw = (
+            "".join(b.text for b in response.content if getattr(b, "type", "") == "text")
+            .strip()
+            .upper()
+        )
         # Tolerate a stray period or quote — but only the first letter counts.
         decision = raw.startswith("Y")
     except Exception as e:

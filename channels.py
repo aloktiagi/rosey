@@ -25,6 +25,7 @@ Two return-type variants:
                                    ack lookup (Telegram only — WhatsApp
                                    ack works via natural-language path).
 """
+
 from __future__ import annotations
 
 import html
@@ -59,7 +60,9 @@ def send(identifier: str, body: str, parse_mode: str | None = None) -> bool:
 
 
 def send_returning_msg_id(
-    identifier: str, body: str, parse_mode: str | None = None,
+    identifier: str,
+    body: str,
+    parse_mode: str | None = None,
 ) -> int | str | None:
     """Like send() but returns the platform message_id on success.
 
@@ -71,7 +74,7 @@ def send_returning_msg_id(
     `parse_mode` is Telegram-specific; ignored for other channels.
     """
     if identifier.startswith("tg:"):
-        return send_telegram(identifier[len("tg:"):], body, parse_mode=parse_mode)
+        return send_telegram(identifier[len("tg:") :], body, parse_mode=parse_mode)
     if identifier.startswith("wa:"):
         # Two flavors of wa: identifier:
         #   wa:+15551234567       → DM to that phone number
@@ -79,7 +82,7 @@ def send_returning_msg_id(
         # For DMs we strip the leading `+` (Cloud API wants raw digits;
         # Baileys's normalizer accepts either). For groups we leave the
         # `group:<jid>` form intact and Baileys's toJid() handles it.
-        rest = identifier[len("wa:"):]
+        rest = identifier[len("wa:") :]
         if rest.startswith("group:"):
             return send_whatsapp(rest, body)  # pass through to Baileys
         return send_whatsapp(rest.lstrip("+"), body)
@@ -88,7 +91,9 @@ def send_returning_msg_id(
 
 
 def send_telegram(
-    chat_id: str, body: str, parse_mode: str | None = None,
+    chat_id: str,
+    body: str,
+    parse_mode: str | None = None,
 ) -> int | None:
     """Stateless POST to Telegram bot API. No SDK dependency.
 
@@ -113,9 +118,7 @@ def send_telegram(
     if parse_mode:
         payload_dict["parse_mode"] = parse_mode
     payload = json.dumps(payload_dict).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=payload, headers={"Content-Type": "application/json"}
-    )
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status != 200:
@@ -128,7 +131,8 @@ def send_telegram(
     except urllib.error.HTTPError as e:
         log.error(
             "telegram send failed to tg:%s status=%s body=%s",
-            chat_id, e.code,
+            chat_id,
+            e.code,
             e.read().decode("utf-8", errors="replace")[:300],
         )
         return None
@@ -180,12 +184,16 @@ def _send_via_baileys(target: str, body: str) -> str | None:
         )
         return None
     url = f"http://127.0.0.1:{bridge_port}/send"
-    payload = json.dumps({
-        "to": target,
-        "text": body[:WHATSAPP_TEXT_LIMIT],
-    }).encode("utf-8")
+    payload = json.dumps(
+        {
+            "to": target,
+            "text": body[:WHATSAPP_TEXT_LIMIT],
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(
-        url, data=payload, headers={
+        url,
+        data=payload,
+        headers={
             "Content-Type": "application/json",
             "X-Bridge-Secret": bridge_secret,
         },
@@ -195,13 +203,14 @@ def _send_via_baileys(target: str, body: str) -> str | None:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
             msg_id = data.get("id")
             if not msg_id:
-                log.warning("baileys send to %s — no message id in response: %s",
-                            target, data)
+                log.warning("baileys send to %s — no message id in response: %s", target, data)
             return msg_id
     except urllib.error.HTTPError as e:
         log.error(
             "baileys send failed to %s status=%s body=%s",
-            target, e.code, e.read().decode("utf-8", errors="replace")[:300],
+            target,
+            e.code,
+            e.read().decode("utf-8", errors="replace")[:300],
         )
         return None
     except Exception:
@@ -230,20 +239,25 @@ def _send_via_cloud_api(phone: str, body: str) -> str | None:
     if not token or not phone_number_id:
         log.warning(
             "whatsapp creds missing — set WHATSAPP_ACCESS_TOKEN and "
-            "WHATSAPP_PHONE_NUMBER_ID; cannot send to wa:%s", phone,
+            "WHATSAPP_PHONE_NUMBER_ID; cannot send to wa:%s",
+            phone,
         )
         return None
 
     # Body is already HTML-stripped by `send_whatsapp` upstream.
     url = f"{WHATSAPP_API_BASE}/{phone_number_id}/messages"
-    payload = json.dumps({
-        "messaging_product": "whatsapp",
-        "to": phone,
-        "type": "text",
-        "text": {"body": body[:WHATSAPP_TEXT_LIMIT]},
-    }).encode("utf-8")
+    payload = json.dumps(
+        {
+            "messaging_product": "whatsapp",
+            "to": phone,
+            "type": "text",
+            "text": {"body": body[:WHATSAPP_TEXT_LIMIT]},
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(
-        url, data=payload, headers={
+        url,
+        data=payload,
+        headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {token}",
         },
@@ -259,7 +273,8 @@ def _send_via_cloud_api(phone: str, body: str) -> str | None:
     except urllib.error.HTTPError as e:
         log.error(
             "whatsapp send failed to wa:%s status=%s body=%s",
-            phone, e.code,
+            phone,
+            e.code,
             e.read().decode("utf-8", errors="replace")[:400],
         )
         return None

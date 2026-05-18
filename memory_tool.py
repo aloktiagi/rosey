@@ -9,10 +9,10 @@ Adds: per-file and total-directory size caps so Claude can't grow memory
 unboundedly. The base class's resulting layout is <base_path>/memories/, so
 passing base_path="." stores everything in ./memories/.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-from typing_extensions import override
 
 from anthropic.lib.tools._beta_builtin_memory_tool import BetaLocalFilesystemMemoryTool
 from anthropic.lib.tools._beta_functions import ToolError
@@ -21,6 +21,7 @@ from anthropic.types.beta import (
     BetaMemoryTool20250818InsertCommand,
     BetaMemoryTool20250818StrReplaceCommand,
 )
+from typing_extensions import override
 
 MAX_FILE_BYTES = 100 * 1024
 MAX_TOTAL_BYTES = 10 * 1024 * 1024

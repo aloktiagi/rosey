@@ -1,4 +1,5 @@
 """REPL for testing the agent locally. Run: python -m cli +14155551234"""
+
 from __future__ import annotations
 
 import sys

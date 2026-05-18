@@ -10,13 +10,13 @@ Covers:
 
 Run with: PYTHONPATH=. python3 test_gate_unified.py
 """
+
 from __future__ import annotations
 
 import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
-
 
 PASS = "\033[32m✓\033[0m"
 FAIL = "\033[31m✗\033[0m"
@@ -38,24 +38,24 @@ def test_explicit_name_trigger() -> None:
 
     cases: list[tuple[str, bool, str]] = [
         # (input, expected_matched, expected_cleaned)
-        ("rosey, what's the wifi",      True,  "what's the wifi"),
-        ("Rosey: drink water",          True,  "drink water"),
-        ("rosey what's up",             True,  "what's up"),
-        ("hey rosey, remind me",        True,  "remind me"),
-        ("Hey Rosey: pick up Maya",     True,  "pick up Maya"),
-        ("rosey",                       True,  ""),                # bare prefix
-        ("HEY ROSEY",                   True,  ""),                # case-insensitive bare
+        ("rosey, what's the wifi", True, "what's the wifi"),
+        ("Rosey: drink water", True, "drink water"),
+        ("rosey what's up", True, "what's up"),
+        ("hey rosey, remind me", True, "remind me"),
+        ("Hey Rosey: pick up Maya", True, "pick up Maya"),
+        ("rosey", True, ""),  # bare prefix
+        ("HEY ROSEY", True, ""),  # case-insensitive bare
         # WhatsApp/Telegram formal @-mentions arrive as literal "@Rosey ..."
         # in the text payload — these MUST trigger or group messages get
         # silently dropped by the fuzzy classifier.
-        ("@Rosey test",                  True,  "test"),
-        ("@rosey remind me to call mom", True,  "remind me to call mom"),
-        ("@Rosey",                       True,  ""),
+        ("@Rosey test", True, "test"),
+        ("@rosey remind me to call mom", True, "remind me to call mom"),
+        ("@Rosey", True, ""),
         # Negatives
-        ("rosemary doesn't count",      False, "rosemary doesn't count"),
+        ("rosemary doesn't count", False, "rosemary doesn't count"),
         ("the babysitter texted Rosey", False, "the babysitter texted Rosey"),
-        ("we need milk",                False, "we need milk"),
-        ("",                            False, ""),
+        ("we need milk", False, "we need milk"),
+        ("", False, ""),
     ]
     for text, expect_matched, expect_cleaned in cases:
         matched, cleaned = explicit_name_trigger(text)
@@ -92,8 +92,10 @@ def test_classify_falls_through_to_fuzzy() -> None:
     import gate
 
     # Force fuzzy ON.
-    with patch.dict(os.environ, {"ROSEY_FUZZY_TRIGGER": "on"}, clear=False), \
-         patch("gate.should_respond_in_group", return_value=True) as mock_yes:
+    with (
+        patch.dict(os.environ, {"ROSEY_FUZZY_TRIGGER": "on"}, clear=False),
+        patch("gate.should_respond_in_group", return_value=True) as mock_yes,
+    ):
         respond, cleaned = gate.classify_group_message("we need milk")
         check(
             "classify: no prefix, fuzzy YES → True (text unchanged)",
@@ -101,8 +103,10 @@ def test_classify_falls_through_to_fuzzy() -> None:
             detail=f"respond={respond} cleaned={cleaned!r}",
         )
 
-    with patch.dict(os.environ, {"ROSEY_FUZZY_TRIGGER": "on"}, clear=False), \
-         patch("gate.should_respond_in_group", return_value=False) as mock_no:
+    with (
+        patch.dict(os.environ, {"ROSEY_FUZZY_TRIGGER": "on"}, clear=False),
+        patch("gate.should_respond_in_group", return_value=False) as mock_no,
+    ):
         respond, _ = gate.classify_group_message("haha lol")
         check(
             "classify: no prefix, fuzzy NO → False",
@@ -117,8 +121,10 @@ def test_classify_falls_through_to_fuzzy() -> None:
 def test_classify_strict_mode_no_llm() -> None:
     import gate
 
-    with patch.dict(os.environ, {"ROSEY_FUZZY_TRIGGER": "off"}, clear=False), \
-         patch("gate.should_respond_in_group") as mock_classifier:
+    with (
+        patch.dict(os.environ, {"ROSEY_FUZZY_TRIGGER": "off"}, clear=False),
+        patch("gate.should_respond_in_group") as mock_classifier,
+    ):
         respond, cleaned = gate.classify_group_message("we need milk")
         check(
             "classify: strict mode, no prefix → False without LLM call",

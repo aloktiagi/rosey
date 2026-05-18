@@ -4,6 +4,7 @@ text it to every household member.
 Run once: `python -m summary`
 Run on schedule: `python -m summary --schedule`  (Sat 9am local)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -68,7 +69,9 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--schedule", action="store_true", help="run on cron (Sat 9am local) instead of once")
+    parser.add_argument(
+        "--schedule", action="store_true", help="run on cron (Sat 9am local) instead of once"
+    )
     args = parser.parse_args()
 
     if not args.schedule:

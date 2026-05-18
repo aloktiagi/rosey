@@ -30,6 +30,7 @@ the scheduler outside the 24h window won't deliver until you've gone
 through Meta's template-approval flow — for now reminder reliability
 stays better on Telegram.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -63,7 +64,8 @@ def verify_webhook(mode: str, token: str, challenge: str) -> tuple[str, int]:
         return challenge, 200
     log.warning(
         "whatsapp webhook verification rejected — mode=%r token_match=%s",
-        mode, token == expected,
+        mode,
+        token == expected,
     )
     return "forbidden", 403
 
@@ -94,8 +96,7 @@ async def handle_event(envelope: dict) -> None:
                 try:
                     await _handle_message(msg, value)
                 except Exception:
-                    log.exception("whatsapp: handler crashed on message id=%s",
-                                  msg.get("id", "?"))
+                    log.exception("whatsapp: handler crashed on message id=%s", msg.get("id", "?"))
 
 
 async def _handle_message(msg: dict, value: dict) -> None:
@@ -113,8 +114,10 @@ async def _handle_message(msg: dict, value: dict) -> None:
         # out of scope for v1. Acknowledge politely instead of going silent.
         log.info("whatsapp: skipping non-text message type=%s", msg_type)
         from channels import send
+
         await asyncio.to_thread(
-            send, f"wa:+{sender}",
+            send,
+            f"wa:+{sender}",
             "I can only handle text messages right now. Try typing instead.",
         )
         return
@@ -132,7 +135,10 @@ async def _handle_message(msg: dict, value: dict) -> None:
 
     try:
         reply = await asyncio.to_thread(
-            handle_message, sender_id, text, origin_chat=origin_chat,
+            handle_message,
+            sender_id,
+            text,
+            origin_chat=origin_chat,
         )
     except Exception:
         log.exception("whatsapp: agent failure for %s", sender_id)
@@ -140,6 +146,7 @@ async def _handle_message(msg: dict, value: dict) -> None:
 
     if reply:
         from channels import send
+
         await asyncio.to_thread(send, sender_id, reply)
 
 
@@ -152,22 +159,23 @@ async def _handle_message(msg: dict, value: dict) -> None:
 # nested entry/changes envelope.
 # ---------------------------------------------------------------------------
 
+
 async def handle_baileys_event(payload: dict) -> None:
     """Process an inbound message from the Baileys sidecar. Schema:
-        {
-          "message_id": "<wamid>",
-          "sender_phone": "15551234567",     # E.164 without +
-          "sender_jid":   "15551234567@s.whatsapp.net",
-          "chat_jid":     "120363xx@g.us"   if group, else same as sender_jid,
-          "is_group":     true|false,
-          "text":         "the message body",
-          "push_name":    "Sunanda" | null,
-          "timestamp":    1731000000,
-          "image_b64":    "<base64 bytes>" | null,   # optional image attachment
-          "image_mime":   "image/jpeg" | null,
-          "audio_b64":    "<base64 bytes>" | null,   # optional voice note
-          "audio_mime":   "audio/ogg; codecs=opus" | null,
-        }
+    {
+      "message_id": "<wamid>",
+      "sender_phone": "15551234567",     # E.164 without +
+      "sender_jid":   "15551234567@s.whatsapp.net",
+      "chat_jid":     "120363xx@g.us"   if group, else same as sender_jid,
+      "is_group":     true|false,
+      "text":         "the message body",
+      "push_name":    "Sunanda" | null,
+      "timestamp":    1731000000,
+      "image_b64":    "<base64 bytes>" | null,   # optional image attachment
+      "image_mime":   "image/jpeg" | null,
+      "audio_b64":    "<base64 bytes>" | null,   # optional voice note
+      "audio_mime":   "audio/ogg; codecs=opus" | null,
+    }
     """
     text = (payload.get("text") or "").strip()
     image_b64 = payload.get("image_b64")
@@ -189,7 +197,9 @@ async def handle_baileys_event(payload: dict) -> None:
     # transcript becomes the agent's input text.
     if audio_b64:
         import base64 as _base64
+
         import transcribe
+
         try:
             audio_bytes = _base64.b64decode(audio_b64)
             transcript = await asyncio.to_thread(
@@ -208,7 +218,8 @@ async def handle_baileys_event(payload: dict) -> None:
             text = f"{text}\n{transcript}".strip() if text else transcript
             log.info(
                 "baileys: transcribed voice note from=%s len=%d",
-                sender_phone, len(transcript),
+                sender_phone,
+                len(transcript),
             )
         elif not text and not image_b64:
             # Empty transcript (Whisper failed or audio was silent) and
@@ -262,13 +273,16 @@ async def handle_baileys_event(payload: dict) -> None:
             )
         else:
             import gate
+
             should_respond, cleaned = await asyncio.to_thread(
-                gate.classify_group_message, text,
+                gate.classify_group_message,
+                text,
             )
             if not should_respond:
                 log.info(
                     "baileys: group msg from=%s ignored by gate (text_len=%d)",
-                    sender_phone, len(text),
+                    sender_phone,
+                    len(text),
                 )
                 return
             text = cleaned or text  # strip leading name prefix if any
@@ -278,20 +292,26 @@ async def handle_baileys_event(payload: dict) -> None:
         #   - inline: "tell @rosey to do X"  (rare but possible)
         # The Baileys layer has already normalized "@<bot-digits>" → "@rosey".
         import re
-        text = re.sub(
-            r"\s*@rosey\b[\s,:.;!?]*", " ", text, flags=re.IGNORECASE
-        ).strip()
+
+        text = re.sub(r"\s*@rosey\b[\s,:.;!?]*", " ", text, flags=re.IGNORECASE).strip()
 
     log.info(
         "baileys: msg from=%s in=%s text_len=%d has_image=%s has_audio=%s",
-        sender_phone, "group" if is_group else "dm", len(text),
-        bool(image_b64), bool(audio_b64),
+        sender_phone,
+        "group" if is_group else "dm",
+        len(text),
+        bool(image_b64),
+        bool(audio_b64),
     )
 
     try:
         reply = await asyncio.to_thread(
-            handle_message, sender_id, text, origin_chat=origin_chat,
-            image_b64=image_b64, image_mime=image_mime,
+            handle_message,
+            sender_id,
+            text,
+            origin_chat=origin_chat,
+            image_b64=image_b64,
+            image_mime=image_mime,
         )
     except Exception as e:
         # Distinguish Anthropic-side overload (transient, retryable) from
@@ -315,4 +335,5 @@ async def handle_baileys_event(payload: dict) -> None:
         return
 
     from channels import send
+
     await asyncio.to_thread(send, reply_target, reply)

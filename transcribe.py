@@ -3,6 +3,7 @@
 Used by the Telegram adapter for voice notes. The caller fetches audio
 bytes (e.g. via Telegram getFile) and passes them to `transcribe_audio`.
 """
+
 from __future__ import annotations
 
 import io

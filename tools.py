@@ -18,6 +18,7 @@ The list is a mix of:
 For Anthropic's full tool catalog see:
   https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview
 """
+
 from __future__ import annotations
 
 from typing import List

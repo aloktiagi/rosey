@@ -18,6 +18,7 @@ Cases:
 
 Output: prints "PASS" / "FAIL" lines and exits 1 on any failure.
 """
+
 from __future__ import annotations
 
 import os
@@ -26,7 +27,6 @@ import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
-
 
 # Ensure repo root on sys.path when invoked as a script.
 THIS_DIR = Path(__file__).resolve().parent
@@ -73,19 +73,19 @@ def _reset_modules() -> None:
 
 # ---------------------------------------------------------------------------
 
+
 def test_urgency_high_per_addressee() -> None:
     print("\n[1] urg:high — per-addressee fan-out + fast intervals")
     _setup_temp_memory(
-        "## Family\n"
-        "- **Ankit** — tg:1001\n"
-        "- **Sunanda** — tg:1002, wa:+15555550002\n"
+        "## Family\n- **Ankit** — tg:1001\n- **Sunanda** — tg:1002, wa:+15555550002\n"
     )
     _reset_modules()
     import scheduler  # type: ignore
 
     sent: list[tuple[str, str]] = []
     with patch.object(
-        scheduler.channels, "send_returning_msg_id",
+        scheduler.channels,
+        "send_returning_msg_id",
         side_effect=lambda ident, body, **kw: (sent.append((ident, body)), 9999)[1],
     ):
         scheduler.start()
@@ -106,14 +106,10 @@ def test_urgency_high_per_addressee() -> None:
         fb_jobs = {j for j in jobs if j.startswith("fallback:")}
         miss_jobs = {j for j in jobs if j.startswith("miss:")}
 
-        _check("two fire jobs (one per addressee)", len(fire_jobs) == 2,
-               f"got {fire_jobs}")
-        _check("two escalate jobs (one per addressee)", len(esc_jobs) == 2,
-               f"got {esc_jobs}")
-        _check("one fallback job", len(fb_jobs) == 1,
-               f"got {fb_jobs}")
-        _check("one miss job", len(miss_jobs) == 1,
-               f"got {miss_jobs}")
+        _check("two fire jobs (one per addressee)", len(fire_jobs) == 2, f"got {fire_jobs}")
+        _check("two escalate jobs (one per addressee)", len(esc_jobs) == 2, f"got {esc_jobs}")
+        _check("one fallback job", len(fb_jobs) == 1, f"got {fb_jobs}")
+        _check("one miss job", len(miss_jobs) == 1, f"got {miss_jobs}")
 
         # Check escalate timing: high tier escalates at +3m from due.
         for j in scheduler.start().get_jobs():
@@ -133,15 +129,13 @@ def test_urgency_high_per_addressee() -> None:
 
 def test_urgency_low_short_ladder() -> None:
     print("\n[2] urg:low — fire + miss only, no escalate, no fallback")
-    _setup_temp_memory(
-        "## Family\n"
-        "- **Ankit** — tg:1001\n"
-    )
+    _setup_temp_memory("## Family\n- **Ankit** — tg:1001\n")
     _reset_modules()
     import scheduler  # type: ignore
 
     with patch.object(
-        scheduler.channels, "send_returning_msg_id",
+        scheduler.channels,
+        "send_returning_msg_id",
         side_effect=lambda *a, **kw: 1,
     ):
         scheduler.start()
@@ -155,29 +149,25 @@ def test_urgency_low_short_ladder() -> None:
 
         jobs = {j.id for j in scheduler.start().get_jobs()}
         _check("one fire job", sum(1 for j in jobs if j.startswith("fire:")) == 1)
-        _check("zero escalate jobs",
-               sum(1 for j in jobs if j.startswith("escalate:")) == 0)
-        _check("zero fallback jobs",
-               sum(1 for j in jobs if j.startswith("fallback:")) == 0)
-        _check("one miss job (just for logging)",
-               sum(1 for j in jobs if j.startswith("miss:")) == 1)
+        _check("zero escalate jobs", sum(1 for j in jobs if j.startswith("escalate:")) == 0)
+        _check("zero fallback jobs", sum(1 for j in jobs if j.startswith("fallback:")) == 0)
+        _check(
+            "one miss job (just for logging)", sum(1 for j in jobs if j.startswith("miss:")) == 1
+        )
 
         scheduler.shutdown(wait=False)
 
 
 def test_ack_cancels_chain() -> None:
     print("\n[3] ack on the line cancels every pending tier")
-    _setup_temp_memory(
-        "## Family\n"
-        "- **Ankit** — tg:1001\n"
-        "- **Sunanda** — tg:1002\n"
-    )
+    _setup_temp_memory("## Family\n- **Ankit** — tg:1001\n- **Sunanda** — tg:1002\n")
     _reset_modules()
     import scheduler  # type: ignore
 
     sent: list[str] = []
     with patch.object(
-        scheduler.channels, "send_returning_msg_id",
+        scheduler.channels,
+        "send_returning_msg_id",
         side_effect=lambda ident, body, **kw: (sent.append(ident), 1)[1],
     ):
         scheduler.start()
@@ -205,50 +195,52 @@ def test_ack_cancels_chain() -> None:
 
         # Manually invoke escalate_one for one addressee — it should
         # self-skip because of the ack annotation.
-        ids = [
-            tok.split(":", 1)[1]
-            for tok in line_with_id.split()
-            if tok.startswith("id:")
-        ]
+        ids = [tok.split(":", 1)[1] for tok in line_with_id.split() if tok.startswith("id:")]
         task_id = ids[0]
         sent_before = len(sent)
         scheduler.escalate_one(
-            task_id, "2026-05-10 14:00", line_with_id,
-            "tg:1001", [("Ankit", "1001"), ("Sunanda", "1002")],
-            addressee_name="Ankit", addressee_idents=["tg:1001"],
+            task_id,
+            "2026-05-10 14:00",
+            line_with_id,
+            "tg:1001",
+            [("Ankit", "1001"), ("Sunanda", "1002")],
+            addressee_name="Ankit",
+            addressee_idents=["tg:1001"],
         )
-        _check("escalate_one self-skips when (acked) is present",
-               len(sent) == sent_before)
+        _check("escalate_one self-skips when (acked) is present", len(sent) == sent_before)
 
         # fallback_one should also self-skip.
         scheduler.fallback_one(
-            task_id, "2026-05-10 14:00", line_with_id,
-            "tg:1001", [("Ankit", "1001"), ("Sunanda", "1002")],
+            task_id,
+            "2026-05-10 14:00",
+            line_with_id,
+            "tg:1001",
+            [("Ankit", "1001"), ("Sunanda", "1002")],
         )
-        _check("fallback_one self-skips when (acked) is present",
-               len(sent) == sent_before)
+        _check("fallback_one self-skips when (acked) is present", len(sent) == sent_before)
 
         # miss_one should also self-skip — line shouldn't move to ## Missed.
         scheduler.miss_one(
-            task_id, "2026-05-10 14:00", line_with_id,
-            "tg:1001", [("Ankit", "1001"), ("Sunanda", "1002")],
+            task_id,
+            "2026-05-10 14:00",
+            line_with_id,
+            "tg:1001",
+            [("Ankit", "1001"), ("Sunanda", "1002")],
         )
         # Line should still be in head (or fired) — NOT in ## Missed.
         after = path.read_text()
-        _check("miss_one self-skips when (acked) is present",
-               "## Missed" not in after,
-               f"file:\n{after}")
+        _check(
+            "miss_one self-skips when (acked) is present",
+            "## Missed" not in after,
+            f"file:\n{after}",
+        )
 
         scheduler.shutdown(wait=False)
 
 
 def test_fallback_resolution_picks_non_addressee() -> None:
     print("\n[4] fallback resolves to a household member who isn't an addressee")
-    _setup_temp_memory(
-        "## Family\n"
-        "- **Ankit** — tg:1001\n"
-        "- **Sunanda** — tg:1002\n"
-    )
+    _setup_temp_memory("## Family\n- **Ankit** — tg:1001\n- **Sunanda** — tg:1002\n")
     _reset_modules()
     import scheduler  # type: ignore
 
@@ -267,28 +259,27 @@ def test_fallback_resolution_picks_non_addressee() -> None:
         "thing @Ankit from:tg:1001 urg:high fb:Sunanda",
         "tg:1001",
     )
-    _check("explicit fb:Sunanda resolves to Sunanda",
-           fallback_name2.lower() == "sunanda")
+    _check("explicit fb:Sunanda resolves to Sunanda", fallback_name2.lower() == "sunanda")
 
     # Solo-household case: addressee is the only member → empty fallback.
     _setup_temp_memory("## Family\n- **Ankit** — tg:1001\n")
     _reset_modules()
     import scheduler as sched2  # type: ignore
+
     fb_name, fb_idents = sched2._resolve_fallback_recipient(
         "do laundry @Ankit from:tg:1001 urg:high",
         "tg:1001",
     )
-    _check("solo household → no fallback",
-           fb_name == "" and fb_idents == [],
-           f"got name={fb_name!r} idents={fb_idents}")
+    _check(
+        "solo household → no fallback",
+        fb_name == "" and fb_idents == [],
+        f"got name={fb_name!r} idents={fb_idents}",
+    )
 
 
 def test_recent_fires_for_lookup() -> None:
     print("\n[5] recent_fires_for surfaces ack candidates for the agent")
-    _setup_temp_memory(
-        "## Family\n"
-        "- **Ankit** — tg:1001\n"
-    )
+    _setup_temp_memory("## Family\n- **Ankit** — tg:1001\n")
     _reset_modules()
     import scheduler  # type: ignore
 
@@ -307,45 +298,41 @@ def test_recent_fires_for_lookup() -> None:
     fires = scheduler.recent_fires_for("tg:1001", within_minutes=10)
     _check("one recent fire surfaced", len(fires) == 1, f"got {fires}")
     if fires:
-        _check("task_id matches", fires[0]["task_id"] == "abc123",
-               f"got {fires[0]}")
-        _check("summary present and reasonable",
-               "pickup" in fires[0]["summary"].lower(),
-               f"got {fires[0]['summary']!r}")
+        _check("task_id matches", fires[0]["task_id"] == "abc123", f"got {fires[0]}")
+        _check(
+            "summary present and reasonable",
+            "pickup" in fires[0]["summary"].lower(),
+            f"got {fires[0]['summary']!r}",
+        )
 
     # An acked line should NOT surface.
     acked = line + " (acked by Ankit at 2026-05-10 14:00)"
     (scheduler.memories_dir() / "reminders.md").write_text(
         f"\n## Fired\n{acked}\n",
     )
-    _check("acked line is excluded",
-           scheduler.recent_fires_for("tg:1001", 10) == [])
+    _check("acked line is excluded", scheduler.recent_fires_for("tg:1001", 10) == [])
 
     # Different identifier → no match.
     (scheduler.memories_dir() / "reminders.md").write_text(content)
-    _check("identifier mismatch returns empty",
-           scheduler.recent_fires_for("tg:9999", 10) == [])
+    _check("identifier mismatch returns empty", scheduler.recent_fires_for("tg:9999", 10) == [])
 
 
 def test_snooze_pattern() -> None:
     print("\n[6] snooze: ack old + new line both reconcile cleanly")
-    _setup_temp_memory(
-        "## Family\n"
-        "- **Ankit** — tg:1001\n"
-    )
+    _setup_temp_memory("## Family\n- **Ankit** — tg:1001\n")
     _reset_modules()
     import scheduler  # type: ignore
 
     with patch.object(
-        scheduler.channels, "send_returning_msg_id",
+        scheduler.channels,
+        "send_returning_msg_id",
         side_effect=lambda *a, **kw: 1,
     ):
         scheduler.start()
         original_due = datetime.utcnow() + timedelta(hours=1)
         snoozed_due = datetime.utcnow() + timedelta(hours=2)
         original_line = (
-            f"- [{original_due.strftime('%Y-%m-%d %H:%M')}] dentist "
-            "@Ankit from:tg:1001 urg:normal"
+            f"- [{original_due.strftime('%Y-%m-%d %H:%M')}] dentist @Ankit from:tg:1001 urg:normal"
         )
         path = scheduler.memories_dir() / "reminders.md"
         path.write_text(original_line + "\n")
@@ -354,15 +341,10 @@ def test_snooze_pattern() -> None:
         # Now mimic snooze: ack the original, append a new line.
         existing = path.read_text().strip()
         snoozed_line = (
-            f"- [{snoozed_due.strftime('%Y-%m-%d %H:%M')}] dentist "
-            "@Ankit from:tg:1001 urg:normal"
+            f"- [{snoozed_due.strftime('%Y-%m-%d %H:%M')}] dentist @Ankit from:tg:1001 urg:normal"
         )
         new_content = (
-            existing
-            + " (acked by Ankit at 2026-05-10 14:00)"
-            + "\n"
-            + snoozed_line
-            + "\n"
+            existing + " (acked by Ankit at 2026-05-10 14:00)" + "\n" + snoozed_line + "\n"
         )
         path.write_text(new_content)
         scheduler.reconcile()
@@ -374,8 +356,11 @@ def test_snooze_pattern() -> None:
         # and the old chain should be gone.
         jobs = sorted(j.id for j in scheduler.start().get_jobs())
         # We expect EXACTLY 4 jobs total for the new (only un-acked) line.
-        _check("snooze produces exactly 4 jobs (one ladder, normal tier)",
-               len(jobs) == 4, f"got jobs={jobs}")
+        _check(
+            "snooze produces exactly 4 jobs (one ladder, normal tier)",
+            len(jobs) == 4,
+            f"got jobs={jobs}",
+        )
 
         scheduler.shutdown(wait=False)
 

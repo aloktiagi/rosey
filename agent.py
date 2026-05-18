@@ -4,6 +4,7 @@ The agent is the household's shared context layer. It speaks via memory
 (durable state in /memories), web search/fetch (anything the web can answer),
 and a per-sender conversation thread that survives across turns.
 """
+
 from __future__ import annotations
 
 import logging
@@ -536,15 +537,30 @@ def _memory_error_hint(error_msg: str) -> str:
     """
     msg = error_msg
     if "did not appear verbatim" in error_msg:
-        return msg + "\nHint: run the `view` command on this file first to see exact contents (whitespace and punctuation must match)."
+        return (
+            msg
+            + "\nHint: run the `view` command on this file first to see exact contents (whitespace and punctuation must match)."
+        )
     if "Multiple occurrences of old_str" in error_msg:
-        return msg + "\nHint: include more surrounding context in old_str so it matches exactly one location."
+        return (
+            msg
+            + "\nHint: include more surrounding context in old_str so it matches exactly one location."
+        )
     if "does not exist" in error_msg and "Please provide a valid path" in error_msg:
-        return msg + "\nHint: if you meant to make a new file, use the `create` command. To list what's in a directory, use `view` on the parent."
+        return (
+            msg
+            + "\nHint: if you meant to make a new file, use the `create` command. To list what's in a directory, use `view` on the parent."
+        )
     if "Invalid `insert_line`" in error_msg:
-        return msg + "\nHint: run `view` on the file first; `insert_line` is 0-indexed and 0 inserts at the very top."
+        return (
+            msg
+            + "\nHint: run `view` on the file first; `insert_line` is 0-indexed and 0 inserts at the very top."
+        )
     if "old_str must not be empty" in error_msg:
-        return msg + "\nHint: use the `insert` command (with insert_line) to add new content, or `create` to overwrite a file."
+        return (
+            msg
+            + "\nHint: use the `insert` command (with insert_line) to add new content, or `create` to overwrite a file."
+        )
     return msg
 
 
@@ -592,7 +608,12 @@ def _build_memory_index(base: str, max_entries: int = MEMORY_INDEX_MAX_ENTRIES) 
     if threads_dir.is_dir():
         thread_count = sum(1 for p in threads_dir.iterdir() if p.is_file())
         if thread_count:
-            entries.append((f"threads/  ({thread_count} per-sender file{'s' if thread_count != 1 else ''})", ""))
+            entries.append(
+                (
+                    f"threads/  ({thread_count} per-sender file{'s' if thread_count != 1 else ''})",
+                    "",
+                )
+            )
 
     if not entries:
         return "(empty — no files yet)"
@@ -636,13 +657,11 @@ def _load_knowledge_index(base: str) -> str:
     except OSError:
         return "(INDEX.md unreadable — recreate it)"
     if not text:
-        return (
-            "(INDEX.md exists but is empty — populate it as you add "
-            "knowledge files)"
-        )
+        return "(INDEX.md exists but is empty — populate it as you add knowledge files)"
     if len(text.encode("utf-8")) > KNOWLEDGE_INDEX_MAX_BYTES:
         head = text.encode("utf-8")[:KNOWLEDGE_INDEX_MAX_BYTES].decode(
-            "utf-8", errors="ignore",
+            "utf-8",
+            errors="ignore",
         )
         return (
             head
@@ -769,6 +788,7 @@ def handle_message(
         recent_fires_block = ""
         try:
             import scheduler as _scheduler  # type: ignore[import-not-found]
+
             fires = _scheduler.recent_fires_for(from_phone, within_minutes=10)
             if fires:
                 lines = [
@@ -780,9 +800,7 @@ def handle_message(
                     "(reminders fired to this user in the last 10 minutes "
                     "that are still un-acked — most recent first; if the "
                     "current message is a casual ack, the top entry is the "
-                    "default target)\n"
-                    + "\n".join(lines)
-                    + "\n</recent_fires>"
+                    "default target)\n" + "\n".join(lines) + "\n</recent_fires>"
                 )
         except Exception:
             log.exception("recent_fires_for lookup failed for %s", from_phone)
@@ -801,7 +819,11 @@ def handle_message(
         user_content: list | str = [
             {
                 "type": "image",
-                "source": {"type": "base64", "media_type": image_mime or "image/jpeg", "data": image_b64},
+                "source": {
+                    "type": "base64",
+                    "media_type": image_mime or "image/jpeg",
+                    "data": image_b64,
+                },
             },
             {"type": "text", "text": text_content or "(photo attached, no caption)"},
         ]
@@ -815,8 +837,9 @@ def handle_message(
     # Snapshot reminders.md mtime so we can detect whether this turn
     # touched it. If it did, we ask the scheduler to reconcile so any
     # newly-written lines become real DateTrigger jobs.
-    reminders_path = (Path(base) if Path(base).name == "memories"
-                      else Path(base) / "memories") / "reminders.md"
+    reminders_path = (
+        Path(base) if Path(base).name == "memories" else Path(base) / "memories"
+    ) / "reminders.md"
     reminders_mtime_before = reminders_path.stat().st_mtime if reminders_path.exists() else 0.0
 
     # Cache the system prompt. Within a single handle_message call the agent
@@ -907,23 +930,29 @@ def handle_message(
                 memory_calls += 1
                 try:
                     result_text = memory.call(tu.input)
-                    tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": result_text})
+                    tool_results.append(
+                        {"type": "tool_result", "tool_use_id": tu.id, "content": result_text}
+                    )
                 except Exception as e:
                     memory_errors += 1
                     log.warning("turn=%s memory tool error: %s", turn_id, e)
-                    tool_results.append({
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tu.id,
+                            "content": _memory_error_hint(f"Error: {e}"),
+                            "is_error": True,
+                        }
+                    )
+            else:
+                tool_results.append(
+                    {
                         "type": "tool_result",
                         "tool_use_id": tu.id,
-                        "content": _memory_error_hint(f"Error: {e}"),
+                        "content": f"Unknown tool: {tu.name}",
                         "is_error": True,
-                    })
-            else:
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tu.id,
-                    "content": f"Unknown tool: {tu.name}",
-                    "is_error": True,
-                })
+                    }
+                )
         messages.append({"role": "user", "content": tool_results})
     else:
         capped = True
@@ -933,15 +962,17 @@ def handle_message(
         # reply. Force a final summary call without tools so the model
         # has to produce text describing what it completed and what's
         # still pending. One extra API call; predictable cost.
-        messages.append({
-            "role": "user",
-            "content": (
-                "Your tool budget for this turn is exhausted. "
-                "Reply now with a short plain-text summary: what you "
-                "completed, and what's still pending (so the user "
-                "can follow up). Do NOT use any tools — just text."
-            ),
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Your tool budget for this turn is exhausted. "
+                    "Reply now with a short plain-text summary: what you "
+                    "completed, and what's still pending (so the user "
+                    "can follow up). Do NOT use any tools — just text."
+                ),
+            }
+        )
         try:
             response = client.beta.messages.create(
                 model=MODEL,
@@ -963,9 +994,20 @@ def handle_message(
     log.info(
         "turn=%s from=%s system=%s iters=%d cap=%s stop=%s mem_calls=%d mem_errs=%d "
         "in_tokens=%d out_tokens=%d cache_w=%d cache_r=%d reply_len=%d wall_ms=%d",
-        turn_id, from_phone, is_system, iterations, capped, last_stop_reason,
-        memory_calls, memory_errors, in_tokens, out_tokens, cache_creation, cache_read,
-        len(reply), dt_ms,
+        turn_id,
+        from_phone,
+        is_system,
+        iterations,
+        capped,
+        last_stop_reason,
+        memory_calls,
+        memory_errors,
+        in_tokens,
+        out_tokens,
+        cache_creation,
+        cache_read,
+        len(reply),
+        dt_ms,
     )
     if reply and thread_path is not None:
         try:
@@ -980,6 +1022,7 @@ def handle_message(
     if reminders_mtime_after != reminders_mtime_before:
         try:
             import scheduler as _scheduler  # type: ignore[import-not-found]
+
             _scheduler.reconcile()
         except Exception:
             log.exception("scheduler.reconcile failed (turn=%s)", turn_id)
@@ -989,6 +1032,7 @@ def handle_message(
         # via the `(broadcasted at …)` marker.
         try:
             import scheduler as _scheduler  # type: ignore[import-not-found]
+
             _scheduler.scan_pending_ack_broadcasts()
         except Exception:
             log.exception("scan_pending_ack_broadcasts failed (turn=%s)", turn_id)
