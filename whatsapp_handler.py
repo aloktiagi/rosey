@@ -244,6 +244,7 @@ async def handle_baileys_event(payload: dict) -> None:
     # we have no text to classify, and "someone posted a photo in the
     # family group" almost never means "Rosey, look at this". If you want
     # Rosey to see a picture in a group, include a caption mentioning her.
+    is_reply_to_bot = bool(payload.get("is_reply_to_bot"))
     if is_group:
         if not text:
             log.info(
@@ -251,17 +252,35 @@ async def handle_baileys_event(payload: dict) -> None:
                 sender_phone,
             )
             return
-        import gate
-        should_respond, cleaned = await asyncio.to_thread(
-            gate.classify_group_message, text,
-        )
-        if not should_respond:
+        # Quoted reply to a Rosey message? Skip the classifier — the user
+        # is clearly continuing a thread with the bot. Mirrors natural
+        # chat threading: nobody re-mentions "rosey" when they swipe-reply.
+        if is_reply_to_bot:
             log.info(
-                "baileys: group msg from=%s ignored by gate (text_len=%d)",
-                sender_phone, len(text),
+                "baileys: group msg from=%s is reply-to-bot — bypassing gate",
+                sender_phone,
             )
-            return
-        text = cleaned or text  # strip the name prefix if one was matched
+        else:
+            import gate
+            should_respond, cleaned = await asyncio.to_thread(
+                gate.classify_group_message, text,
+            )
+            if not should_respond:
+                log.info(
+                    "baileys: group msg from=%s ignored by gate (text_len=%d)",
+                    sender_phone, len(text),
+                )
+                return
+            text = cleaned or text  # strip leading name prefix if any
+        # Strip any remaining @rosey self-mentions so the agent doesn't
+        # try to look "rosey" up as a household member. Catches:
+        #   - trailing addressings: "do X @rosey"
+        #   - inline: "tell @rosey to do X"  (rare but possible)
+        # The Baileys layer has already normalized "@<bot-digits>" → "@rosey".
+        import re
+        text = re.sub(
+            r"\s*@rosey\b[\s,:.;!?]*", " ", text, flags=re.IGNORECASE
+        ).strip()
 
     log.info(
         "baileys: msg from=%s in=%s text_len=%d has_image=%s has_audio=%s",
