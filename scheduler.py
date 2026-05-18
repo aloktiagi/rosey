@@ -39,6 +39,7 @@ Public API:
                               Telegram message at (chat_id, msg_id), used
                               by reply-to-bot ack detection
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -56,8 +57,8 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
-from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.date import DateTrigger
 
 import channels
@@ -95,9 +96,17 @@ _FAILED_HEADER = "## Failed_Delivery"
 # corresponding preset entry. Fallback is preset-only (no per-line tag) —
 # if you want fine-grained control, set the urgency.
 URGENCY_INTERVALS: dict[str, dict[str, Optional[timedelta]]] = {
-    "low":    {"escalate": None,                  "fallback": None,                 "miss": timedelta(hours=1)},
-    "normal": {"escalate": timedelta(minutes=15), "fallback": timedelta(minutes=45), "miss": timedelta(hours=2)},
-    "high":   {"escalate": timedelta(minutes=3),  "fallback": timedelta(minutes=10), "miss": timedelta(minutes=30)},
+    "low": {"escalate": None, "fallback": None, "miss": timedelta(hours=1)},
+    "normal": {
+        "escalate": timedelta(minutes=15),
+        "fallback": timedelta(minutes=45),
+        "miss": timedelta(hours=2),
+    },
+    "high": {
+        "escalate": timedelta(minutes=3),
+        "fallback": timedelta(minutes=10),
+        "miss": timedelta(minutes=30),
+    },
 }
 DEFAULT_URGENCY = "normal"
 
@@ -115,6 +124,7 @@ _lock = threading.Lock()
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _db_path() -> Path:
     """Where the SQLite jobstore lives. Defaults to a sibling of memories/
@@ -146,7 +156,7 @@ def _generate_id(ts_str: str, message: str) -> str:
     same id → reconcile is idempotent. Edited line → new id, old jobs
     age out as orphans on next reconcile.
     """
-    return hashlib.sha1(f"{ts_str}|{message}".encode("utf-8")).hexdigest()[:12]
+    return hashlib.sha1(f"{ts_str}|{message}".encode()).hexdigest()[:12]
 
 
 def _parse_duration(value: str, unit: str) -> timedelta:
@@ -223,6 +233,7 @@ def _format_assignee_html(assignees) -> str:
 # so roster edits between scheduling and firing take effect.
 # ---------------------------------------------------------------------------
 
+
 def _slug_for_addressee(name: str) -> str:
     """Stable lowercase slug for use in APScheduler job IDs. Strips
     everything that isn't alphanumeric so `fire:<task_id>:<slug>` stays
@@ -232,7 +243,8 @@ def _slug_for_addressee(name: str) -> str:
 
 
 def _resolve_fallback_recipient(
-    raw_message: str, origin_chat: str,
+    raw_message: str,
+    origin_chat: str,
 ) -> tuple[str, list[str]]:
     """Return (fallback_name, list_of_identifiers) for the fallback tier.
 
@@ -307,6 +319,7 @@ def _resolve_fallback_recipient(
 # Lifecycle: start / shutdown
 # ---------------------------------------------------------------------------
 
+
 def start() -> BackgroundScheduler:
     """Start the singleton scheduler. Idempotent."""
     global _scheduler
@@ -347,6 +360,7 @@ def shutdown(wait: bool = False) -> None:
 # ---------------------------------------------------------------------------
 # File parsing / rewriting
 # ---------------------------------------------------------------------------
+
 
 def _split_sections(content: str) -> dict:
     """Parse reminders.md into its named sections.
@@ -466,9 +480,7 @@ def _line_for_task(task_id: str, sections: dict) -> Optional[tuple[str, str]]:
     return None
 
 
-def _replace_line_in_section(
-    section_text: str, old_line: str, new_line: str | None
-) -> str:
+def _replace_line_in_section(section_text: str, old_line: str, new_line: str | None) -> str:
     """Replace `old_line` in a section. If `new_line` is None, drop it."""
     out = []
     replaced = False
@@ -489,6 +501,7 @@ def _replace_line_in_section(
 # ---------------------------------------------------------------------------
 # Recurring reminders — write the next occurrence after a successful fire.
 # ---------------------------------------------------------------------------
+
 
 def _parse_repeat_interval(spec: str) -> timedelta | None:
     """Parse a `repeat:` value into a timedelta. Accepts named intervals
@@ -536,7 +549,8 @@ def _maybe_schedule_next_occurrence(task_id: str, ts_str: str, raw_message: str)
     if interval is None:
         log.warning(
             "recur task=%s: unparseable repeat spec %r — chain stops",
-            task_id, repeat_match.group(1),
+            task_id,
+            repeat_match.group(1),
         )
         return False
 
@@ -557,9 +571,9 @@ def _maybe_schedule_next_occurrence(task_id: str, ts_str: str, raw_message: str)
     # new line starts clean. The repeat: tag itself stays — that's what
     # keeps the chain going.
     body = raw_message
-    body = re.sub(r"\([^)]*\)", "", body)         # drop lifecycle annotations
-    body = ID_RE.sub("", body)                     # drop the previous id; reconcile assigns new
-    body = " ".join(body.split())                  # collapse whitespace
+    body = re.sub(r"\([^)]*\)", "", body)  # drop lifecycle annotations
+    body = ID_RE.sub("", body)  # drop the previous id; reconcile assigns new
+    body = " ".join(body.split())  # collapse whitespace
 
     new_id = _generate_id(next_ts, body)
 
@@ -587,12 +601,18 @@ def _maybe_schedule_next_occurrence(task_id: str, ts_str: str, raw_message: str)
     fired_lines = [l for l in sections["fired"].splitlines() if l.strip()]
     missed_lines = [l for l in sections["missed"].splitlines() if l.strip()]
     _rewrite_file(
-        path, head_lines, fired_lines, missed_lines,
-        sections["malformed"], sections["failed"],
+        path,
+        head_lines,
+        fired_lines,
+        missed_lines,
+        sections["malformed"],
+        sections["failed"],
     )
     log.info(
         "recur task=%s — wrote next occurrence at %s (new id=%s)",
-        task_id, next_ts, new_id,
+        task_id,
+        next_ts,
+        new_id,
     )
 
     # The new line needs a ladder of scheduler jobs (fire/escalate/etc).
@@ -690,8 +710,11 @@ def escalate_one(
         log.info("escalate_one task=%s: line not found, noop", task_id)
         return
     if state["acked"] or state["missed"]:
-        log.info("escalate_one task=%s: already %s, noop",
-                 task_id, "acked" if state["acked"] else "missed")
+        log.info(
+            "escalate_one task=%s: already %s, noop",
+            task_id,
+            "acked" if state["acked"] else "missed",
+        )
         return
 
     # Per-addressee escalation marker — distinct from the legacy global
@@ -700,7 +723,8 @@ def escalate_one(
     if addressee_name and f"escalated to {addressee_name}" in state["line"]:
         log.info(
             "escalate_one task=%s addressee=%s: already escalated, noop",
-            task_id, addressee_name,
+            task_id,
+            addressee_name,
         )
         return
 
@@ -708,9 +732,7 @@ def escalate_one(
     body_text = html.escape(_strip_to_user_message(raw_message))
     mention_html = _format_assignee_html(assignee_names)
     name_phrase = f" for {mention_html}" if mention_html else ""
-    body = (
-        f"⏰ Still pending{name_phrase} — please ack: {body_text}"
-    )
+    body = f"⏰ Still pending{name_phrase} — please ack: {body_text}"
 
     sent_pairs: list[tuple[str, int]] = []
     for ident in targets:
@@ -719,13 +741,16 @@ def escalate_one(
             sent_pairs.append((ident, msg_id))
 
     if not sent_pairs:
-        log.warning("escalate_one task=%s addressee=%s: no successful sends",
-                    task_id, addressee_name)
+        log.warning(
+            "escalate_one task=%s addressee=%s: no successful sends", task_id, addressee_name
+        )
         return
 
     log.info(
         "escalate_one task=%s addressee=%s sent_to=%s",
-        task_id, addressee_name, [p[0] for p in sent_pairs],
+        task_id,
+        addressee_name,
+        [p[0] for p in sent_pairs],
     )
 
     msg_pairs_str = " ".join(f"chat:{ident} msg:{mid}" for ident, mid in sent_pairs)
@@ -759,8 +784,11 @@ def fallback_one(
     if state is None:
         return
     if state["acked"] or state["missed"]:
-        log.info("fallback_one task=%s: already %s, noop",
-                 task_id, "acked" if state["acked"] else "missed")
+        log.info(
+            "fallback_one task=%s: already %s, noop",
+            task_id,
+            "acked" if state["acked"] else "missed",
+        )
         return
 
     fallback_name, fallback_idents = _resolve_fallback_recipient(raw_message, origin_chat)
@@ -779,10 +807,12 @@ def fallback_one(
     # `assignee_names` may also be a list of (name, chat_id) tuples per the
     # display contract — pull the names back out for the plain-text phrase.
     if assignee_names and not all(isinstance(n, str) for n in assignee_names):
-        addressee_phrase = " ".join(
-            f"@{e[0]}" for e in assignee_names
-            if isinstance(e, (list, tuple)) and e and e[0]
-        ) or addressee_phrase
+        addressee_phrase = (
+            " ".join(
+                f"@{e[0]}" for e in assignee_names if isinstance(e, (list, tuple)) and e and e[0]
+            )
+            or addressee_phrase
+        )
     body = (
         f"⏰ Heads up {fallback_name} — {addressee_phrase} hasn't acked: "
         f"{body_text}. Can you take it or nudge them?"
@@ -795,13 +825,14 @@ def fallback_one(
             sent_pairs.append((ident, msg_id))
 
     if not sent_pairs:
-        log.warning("fallback_one task=%s: send to %s failed",
-                    task_id, fallback_idents)
+        log.warning("fallback_one task=%s: send to %s failed", task_id, fallback_idents)
         return
 
     log.info(
         "fallback_one task=%s fallback_to=%s sent_to=%s",
-        task_id, fallback_name, [p[0] for p in sent_pairs],
+        task_id,
+        fallback_name,
+        [p[0] for p in sent_pairs],
     )
 
     msg_pairs_str = " ".join(f"chat:{ident} msg:{mid}" for ident, mid in sent_pairs)
@@ -840,6 +871,7 @@ def miss_one(
 # Ack helpers — called from telegram_bot for reply-to-bot acks, and indirectly
 # (via agent annotation) for natural-language acks.
 # ---------------------------------------------------------------------------
+
 
 def mark_acked(task_id: str, by_name: str) -> bool:
     """Append `(acked by <name> at <now>)` to the task's line. Returns True
@@ -1023,18 +1055,21 @@ def recent_fires_for(identifier: str, within_minutes: int = 10) -> list[dict]:
                 # Find a chat:<identifier> msg:<n> pair that matches.
                 # Identifiers may be `tg:NNN`, `wa:+NNN`, `wa:group:JID`, etc.
                 for chat_m in re.finditer(
-                    r"chat:(\S+)\s+msg:(\d+)", blob,
+                    r"chat:(\S+)\s+msg:(\d+)",
+                    blob,
                 ):
                     chat_ident = chat_m.group(1)
                     if chat_ident != identifier:
                         continue
                     summary = _strip_to_user_message(line[2:])  # drop leading "- "
-                    out.append({
-                        "task_id": task_id,
-                        "fired_at": ts_m.group(1),
-                        "msg_id": chat_m.group(2),
-                        "summary": summary[:120],
-                    })
+                    out.append(
+                        {
+                            "task_id": task_id,
+                            "fired_at": ts_m.group(1),
+                            "msg_id": chat_m.group(2),
+                            "summary": summary[:120],
+                        }
+                    )
                     break  # one match per parenthetical is enough
     # Most recent first.
     out.sort(key=lambda r: r["fired_at"], reverse=True)
@@ -1082,8 +1117,12 @@ def _append_annotation(task_id: str, annotation: str) -> bool:
     fired_lines = [l for l in sections["fired"].splitlines() if l.strip()]
     missed_lines = [l for l in sections["missed"].splitlines() if l.strip()]
     _rewrite_file(
-        path, head_lines, fired_lines, missed_lines,
-        sections["malformed"], sections["failed"],
+        path,
+        head_lines,
+        fired_lines,
+        missed_lines,
+        sections["malformed"],
+        sections["failed"],
     )
     return True
 
@@ -1112,12 +1151,16 @@ def _annotate_and_move(task_id: str, annotation: str, target_section: str) -> bo
     if current_section == target_section:
         # Just annotate in place.
         sections[current_section] = _replace_line_in_section(
-            sections[current_section], line, new_line,
+            sections[current_section],
+            line,
+            new_line,
         )
     else:
         # Remove from current section, append to target section.
         sections[current_section] = _replace_line_in_section(
-            sections[current_section], line, None,
+            sections[current_section],
+            line,
+            None,
         )
         if sections[target_section].strip():
             sections[target_section] = sections[target_section].rstrip() + "\n" + new_line
@@ -1128,8 +1171,12 @@ def _annotate_and_move(task_id: str, annotation: str, target_section: str) -> bo
     fired_lines = [l for l in sections["fired"].splitlines() if l.strip()]
     missed_lines = [l for l in sections["missed"].splitlines() if l.strip()]
     _rewrite_file(
-        path, head_lines, fired_lines, missed_lines,
-        sections["malformed"], sections["failed"],
+        path,
+        head_lines,
+        fired_lines,
+        missed_lines,
+        sections["malformed"],
+        sections["failed"],
     )
     return True
 
@@ -1137,6 +1184,7 @@ def _annotate_and_move(task_id: str, annotation: str, target_section: str) -> bo
 # ---------------------------------------------------------------------------
 # Reconcile: the entry point called on startup and after each agent turn.
 # ---------------------------------------------------------------------------
+
 
 def reconcile() -> None:
     """Sync /memories/reminders.md → scheduler jobs.
@@ -1163,7 +1211,7 @@ def reconcile() -> None:
     malformed_block = sections["malformed"]
     failed_block = sections["failed"]
 
-    pending: list[dict] = []     # parsed valid pending lines
+    pending: list[dict] = []  # parsed valid pending lines
     new_malformed: list[str] = []
     kept_head_lines: list[str] = []
     file_mutated = False
@@ -1192,12 +1240,14 @@ def reconcile() -> None:
             mm = LINE_RE.match(canonical_line)
             message = mm.group(2) if mm else message
         kept_head_lines.append(canonical_line)
-        pending.append({
-            "task_id": task_id,
-            "ts_str": ts_str,
-            "raw_message": message,
-            "raw_line": canonical_line,
-        })
+        pending.append(
+            {
+                "task_id": task_id,
+                "ts_str": ts_str,
+                "raw_message": message,
+                "raw_line": canonical_line,
+            }
+        )
 
     # Recipient cascade + per-line escalation cadences.
     # A single person can have multiple identifiers (e.g. tg + wa) — we
@@ -1253,7 +1303,7 @@ def reconcile() -> None:
             chat_id_str: str | None = None
             for ident in members_by_name_all.get(lower, []):
                 if ident.startswith("tg:"):
-                    chat_id_str = ident[len("tg:"):]
+                    chat_id_str = ident[len("tg:") :]
                     break
             assignees.append((display_name, chat_id_str))
         from_chats = FROM_RE.findall(msg)
@@ -1290,12 +1340,14 @@ def reconcile() -> None:
                         )
                 log.warning(
                     "reconcile: unknown mentions %s, falling back to %s chains",
-                    mentions, len(addressee_chains),
+                    mentions,
+                    len(addressee_chains),
                 )
             elif unresolved:
                 log.info(
                     "reconcile: partial mention resolution — known=%s unknown=%s",
-                    [n for n in mentions if n not in unresolved], unresolved,
+                    [n for n in mentions if n not in unresolved],
+                    unresolved,
                 )
         else:
             # No @-mentions: fan to whole household. Each member gets
@@ -1316,7 +1368,9 @@ def reconcile() -> None:
             )
             log.warning(
                 "reconcile: failed delivery ts=%s msg=%r — %s",
-                p["ts_str"], _strip_to_user_message(msg), reason,
+                p["ts_str"],
+                _strip_to_user_message(msg),
+                reason,
             )
             failed_to_deliver.append((p["task_id"], p["raw_line"], reason))
             continue
@@ -1358,10 +1412,8 @@ def reconcile() -> None:
     truly_new_failed: list[tuple[str, str]] = []
     if failed_to_deliver:
         existing_failed = failed_block.strip().splitlines() if failed_block.strip() else []
-        existing_failed_set = {
-            l.strip() for l in existing_failed if l.strip().startswith("- ")
-        }
-        for tid, raw_line, reason in failed_to_deliver:
+        existing_failed_set = {l.strip() for l in existing_failed if l.strip().startswith("- ")}
+        for _tid, raw_line, reason in failed_to_deliver:
             if not raw_line or raw_line.strip() in existing_failed_set:
                 continue
             try:
@@ -1406,8 +1458,14 @@ def reconcile() -> None:
             sched.add_job(
                 fire_one,
                 trigger=DateTrigger(run_date=due),
-                args=[tid, info["ts_str"], info["raw_message"],
-                      addr_idents, info["origin_chat"], assignees],
+                args=[
+                    tid,
+                    info["ts_str"],
+                    info["raw_message"],
+                    addr_idents,
+                    info["origin_chat"],
+                    assignees,
+                ],
                 id=fire_id,
                 replace_existing=True,
             )
@@ -1418,8 +1476,7 @@ def reconcile() -> None:
                 sched.add_job(
                     escalate_one,
                     trigger=DateTrigger(run_date=due + intervals["escalate"]),
-                    args=[tid, info["ts_str"], info["raw_message"],
-                          info["origin_chat"], assignees],
+                    args=[tid, info["ts_str"], info["raw_message"], info["origin_chat"], assignees],
                     kwargs={
                         "addressee_name": addr_name,
                         "addressee_idents": addr_idents,
@@ -1438,8 +1495,7 @@ def reconcile() -> None:
             sched.add_job(
                 fallback_one,
                 trigger=DateTrigger(run_date=due + intervals["fallback"]),
-                args=[tid, info["ts_str"], info["raw_message"],
-                      info["origin_chat"], assignees],
+                args=[tid, info["ts_str"], info["raw_message"], info["origin_chat"], assignees],
                 id=fb_id,
                 replace_existing=True,
             )
@@ -1451,8 +1507,7 @@ def reconcile() -> None:
         sched.add_job(
             miss_one,
             trigger=DateTrigger(run_date=due + intervals["miss"]),
-            args=[tid, info["ts_str"], info["raw_message"],
-                  info["origin_chat"], assignees],
+            args=[tid, info["ts_str"], info["raw_message"], info["origin_chat"], assignees],
             id=miss_id,
             replace_existing=True,
         )
@@ -1466,9 +1521,7 @@ def reconcile() -> None:
     removed = 0
     for j in sched.get_jobs():
         is_legacy_prefix = j.id.startswith("reminder:")
-        is_lifecycle_prefix = j.id.startswith(
-            ("fire:", "escalate:", "fallback:", "miss:")
-        )
+        is_lifecycle_prefix = j.id.startswith(("fire:", "escalate:", "fallback:", "miss:"))
         if is_legacy_prefix or (is_lifecycle_prefix and j.id not in desired_job_ids):
             try:
                 sched.remove_job(j.id)
@@ -1483,9 +1536,7 @@ def reconcile() -> None:
         existing_malformed_set = {
             l.strip() for l in existing_malformed if l.strip().startswith("- ")
         }
-        truly_new_malformed = [
-            l for l in new_malformed if l.strip() not in existing_malformed_set
-        ]
+        truly_new_malformed = [l for l in new_malformed if l.strip() not in existing_malformed_set]
 
         fired_lines = [l for l in fired_block.splitlines() if l.strip()]
         missed_lines = [l for l in missed_block.splitlines() if l.strip()]
@@ -1503,7 +1554,9 @@ def reconcile() -> None:
     if added_reminders or removed:
         log.info(
             "reconcile: +%d reminders (=%d total jobs across per-addressee chains), -%d orphans",
-            added_reminders, added_jobs, removed,
+            added_reminders,
+            added_jobs,
+            removed,
         )
 
 
@@ -1511,6 +1564,7 @@ def reconcile() -> None:
 # Status — read-only summary of what's pending, fired, missed. Used by the
 # `/status` and "rosey status" admin command for at-a-glance verification.
 # ---------------------------------------------------------------------------
+
 
 def compute_status() -> str:
     """Build a short, plain-text summary suitable for a Telegram reply.
@@ -1552,9 +1606,7 @@ def compute_status() -> str:
     parts: list[str] = []
     if pending:
         if next_due_ts and next_due_msg:
-            parts.append(
-                f"📅 {len(pending)} pending. Next: \"{next_due_msg}\" at {next_due_ts}."
-            )
+            parts.append(f'📅 {len(pending)} pending. Next: "{next_due_msg}" at {next_due_ts}.')
         else:
             parts.append(f"📅 {len(pending)} pending.")
     else:
@@ -1591,6 +1643,7 @@ def compute_status() -> str:
 # orphan removal above), but keep the symbol importable so APScheduler can
 # load and immediately delete them without ImportError.
 # ---------------------------------------------------------------------------
+
 
 def fire_reminder(*args, **kwargs) -> None:  # pragma: no cover
     log.info("legacy fire_reminder shim invoked — should be cleaned up on next reconcile")

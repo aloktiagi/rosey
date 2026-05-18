@@ -17,6 +17,7 @@ on a line like `- Alex (tg:12345678)`. Anyone whose chat_id isn't in the
 roster gets a polite "ask the host to add you" reply with their chat_id —
 the host then pastes it into household.md and reloads the bot.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -46,6 +47,7 @@ log = logging.getLogger("rosey.telegram")
 # chat, which is fine for a household-scale deployment.
 _chat_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
+
 # Path to the file we use to persist the last-processed Telegram update_id
 # so a crash + restart doesn't redeliver and re-process the same message.
 # Lives next to the memory directory rather than inside it (the agent's
@@ -69,10 +71,10 @@ def _save_last_update_id(uid: int) -> None:
     except OSError:
         log.exception("failed to persist last update_id")
 
+
 # Name-prefix triggers live in gate.py as the channel-agnostic source
 # of truth (so the WhatsApp/Baileys path uses the same set). Imported
 # here for backward-compat references.
-from gate import _NAME_PREFIXES  # noqa: E402
 
 
 def _is_authorized(chat, user_id: int) -> bool:
@@ -160,6 +162,7 @@ def _bot_addressed(update, bot_username: str | None, bot_id: int | None) -> tupl
 # ---------------------------------------------------------------------------
 # Telegram handlers
 # ---------------------------------------------------------------------------
+
 
 def _is_group(chat) -> bool:
     return chat.type in ("group", "supergroup")
@@ -317,7 +320,9 @@ async def _on_text(update, context):
             if _seen_or_advance(update.update_id):
                 return
             ok = await asyncio.to_thread(
-                reminder_scheduler.mark_acked, task_id, name or f"tg:{user.id}",
+                reminder_scheduler.mark_acked,
+                task_id,
+                name or f"tg:{user.id}",
             )
             if ok:
                 log.info("ack via reply-to-bot from=tg:%s task=%s", user.id, task_id)
@@ -428,20 +433,22 @@ async def _on_photo(update, context):
     image_b64 = base64.b64encode(image_bytes).decode("ascii")
     log.info(
         "inbound photo from=tg:%s bytes=%d caption_len=%d",
-        chat_id, len(image_bytes), len(caption),
+        chat_id,
+        len(image_bytes),
+        len(caption),
     )
     try:
         reply = await _run_agent(
-            f"tg:{chat_id}", caption,
-            image_b64=image_b64, image_mime="image/jpeg",
+            f"tg:{chat_id}",
+            caption,
+            image_b64=image_b64,
+            image_mime="image/jpeg",
         )
     except Exception as e:
         err_cls = type(e).__name__
         if "Overloaded" in err_cls or "529" in str(e):
             log.warning("claude API overloaded for tg:%s (photo) — %s", chat_id, e)
-            reply = (
-                "Claude's API is temporarily overloaded — try again in a minute."
-            )
+            reply = "Claude's API is temporarily overloaded — try again in a minute."
         else:
             log.exception("agent failure for tg:%s (photo)", chat_id)
             reply = "Something went wrong. Try again in a moment."
@@ -483,26 +490,19 @@ async def _on_voice(update, context):
         await tg_file.download_to_memory(out=buf)
         audio_bytes = buf.getvalue()
         # Telegram voice is OGG Opus
-        transcript = await asyncio.to_thread(
-            transcribe.transcribe_audio, audio_bytes, "audio/ogg"
-        )
+        transcript = await asyncio.to_thread(transcribe.transcribe_audio, audio_bytes, "audio/ogg")
     except Exception:
         log.exception("transcription failed for tg:%s", user.id)
-        await update.message.reply_text(
-            "I couldn't hear that — try again or send text."
-        )
+        await update.message.reply_text("I couldn't hear that — try again or send text.")
         return
 
     if not transcript.strip():
-        await update.message.reply_text(
-            "I couldn't make out any speech. Try again?"
-        )
+        await update.message.reply_text("I couldn't make out any speech. Try again?")
         return
 
     sender_id = f"tg:{user.id}"
     origin_chat = f"tg:{chat.id}"
-    log.info("inbound voice from=%s chat=%s transcript_len=%d",
-             sender_id, chat.id, len(transcript))
+    log.info("inbound voice from=%s chat=%s transcript_len=%d", sender_id, chat.id, len(transcript))
     async with _chat_locks[chat.id]:
         try:
             reply = await _run_agent(sender_id, transcript, origin_chat)
@@ -510,9 +510,7 @@ async def _on_voice(update, context):
             err_cls = type(e).__name__
             if "Overloaded" in err_cls or "529" in str(e):
                 log.warning("claude API overloaded for %s (voice) — %s", sender_id, e)
-                reply = (
-                    "Claude's API is temporarily overloaded — try again in a minute."
-                )
+                reply = "Claude's API is temporarily overloaded — try again in a minute."
             else:
                 log.exception("agent failure for %s (voice)", sender_id)
                 reply = "Something went wrong. Try again in a moment."
@@ -524,6 +522,7 @@ async def _on_voice(update, context):
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> int:
     load_dotenv()
@@ -583,8 +582,12 @@ def main() -> int:
                 "TELEGRAM_WEBHOOK_SECRET unset — webhook is unauthenticated. "
                 "Set it to a random string and re-deploy for production."
             )
-        log.info("starting webhook on :%d → %s (auth=%s)",
-                 port, webhook_url, "on" if secret_token else "OFF")
+        log.info(
+            "starting webhook on :%d → %s (auth=%s)",
+            port,
+            webhook_url,
+            "on" if secret_token else "OFF",
+        )
         app.run_webhook(
             listen="0.0.0.0",
             port=port,

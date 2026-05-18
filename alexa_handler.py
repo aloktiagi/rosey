@@ -17,6 +17,7 @@ skills can opt out, and ours is dev-mode for now). When/if we ever
 distribute the skill publicly, we'd add SigV1 verification per:
 https://developer.amazon.com/en-US/docs/alexa/custom-skills/host-a-custom-skill-as-a-web-service.html#manually-verify-request-sent-by-alexa
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -105,7 +106,11 @@ async def _handle_intent(envelope: dict) -> dict:
         or "unknown"
     )
 
-    log.info("alexa: intent=%s user=%s", intent_name, user_id[:24] + "…" if len(user_id) > 24 else user_id)
+    log.info(
+        "alexa: intent=%s user=%s",
+        intent_name,
+        user_id[:24] + "…" if len(user_id) > 24 else user_id,
+    )
 
     if intent_name == "AMAZON.HelpIntent":
         return _speak(
@@ -147,7 +152,10 @@ async def _dispatch_to_agent(query: str, alexa_user_id: str) -> dict:
 
     try:
         reply = await asyncio.to_thread(
-            handle_message, sender_id, query, origin_chat=origin_chat,
+            handle_message,
+            sender_id,
+            query,
+            origin_chat=origin_chat,
         )
     except Exception:
         log.exception("alexa: agent failure for %s", sender_id)
@@ -156,6 +164,8 @@ async def _dispatch_to_agent(query: str, alexa_user_id: str) -> dict:
     voice_reply = _clean_for_voice(reply or "Done.")
     log.info(
         "alexa: query_len=%d agent_reply_len=%d voice_len=%d",
-        len(query), len(reply or ""), len(voice_reply),
+        len(query),
+        len(reply or ""),
+        len(voice_reply),
     )
     return _speak(voice_reply)

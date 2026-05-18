@@ -33,6 +33,7 @@ Identifier prefixes recognized: `tg:` (Telegram), `wa:` (WhatsApp),
 `alexa:` (Alexa skill user). Adding a new channel is just a regex change
 in `_IDENT_RE` below.
 """
+
 from __future__ import annotations
 
 import re
@@ -45,7 +46,7 @@ from paths import memories_dir
 @dataclass(frozen=True)
 class Member:
     name: str
-    identifier: str   # e.g. "tg:NNN"
+    identifier: str  # e.g. "tg:NNN"
     notes: str = ""
 
     @property
@@ -57,7 +58,7 @@ class Member:
         if not self.is_telegram:
             return None
         try:
-            return int(self.identifier[len("tg:"):])
+            return int(self.identifier[len("tg:") :])
         except ValueError:
             return None
 
@@ -178,7 +179,11 @@ def _parse_table_row(line: str, header_indices: dict[str, int]) -> list[Member]:
         return []
     name = cells[name_idx]
     ident_cell = cells[ident_idx]
-    notes = cells[header_indices["notes"]] if "notes" in header_indices and header_indices["notes"] < len(cells) else ""
+    notes = (
+        cells[header_indices["notes"]]
+        if "notes" in header_indices and header_indices["notes"] < len(cells)
+        else ""
+    )
     if not name:
         return []
     idents = _extract_identifiers(ident_cell)
@@ -231,12 +236,8 @@ def members() -> list[Member]:
                 continue
 
             cells = [c.strip().lower() for c in stripped.strip().strip("|").split("|")]
-            looks_like_header = (
-                "name" in cells
-                and any(
-                    c in {"identifier", "identifiers", "id", "tg", "chat_id", "telegram"}
-                    for c in cells
-                )
+            looks_like_header = "name" in cells and any(
+                c in {"identifier", "identifiers", "id", "tg", "chat_id", "telegram"} for c in cells
             )
             if looks_like_header:
                 header_indices = {}

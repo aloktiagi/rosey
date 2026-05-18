@@ -4,6 +4,7 @@ Centralizes the `MEMORY_ROOT` env-var convention so callers don't
 re-derive it (and don't silently disagree about whether `/data/memories`
 or `/data` was passed in).
 """
+
 from __future__ import annotations
 
 import os

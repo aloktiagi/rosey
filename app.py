@@ -8,6 +8,7 @@ Exposes:
                             by the router after invite-code redemption).
   GET  /health           — Fly health check.
 """
+
 from __future__ import annotations
 
 import hmac
@@ -37,8 +38,8 @@ def _maybe_start_scheduler() -> None:
     schedulers."""
     if os.environ.get("ROSEY_ENABLE_SCHEDULER") != "1":
         return
-    from summary import run_once  # local import — defer Telegram pulls until needed
     import reminders
+    from summary import run_once  # local import — defer Telegram pulls until needed
 
     tz = os.environ.get("SCHEDULER_TZ", "UTC")
     scheduler = BackgroundScheduler(timezone=tz)
@@ -104,6 +105,7 @@ def _request_is_trusted_internal() -> bool:
 # Telegram inbound (forwarded by router)
 # ---------------------------------------------------------------------------
 
+
 def _send_telegram_message(chat_id: int, text: str) -> bool:
     """Reply to a Telegram chat using the bot token. Stateless POST."""
     import json as _json
@@ -116,16 +118,15 @@ def _send_telegram_message(chat_id: int, text: str) -> bool:
         return False
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = _json.dumps({"chat_id": chat_id, "text": text[:4096]}).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=payload, headers={"Content-Type": "application/json"}
-    )
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.status == 200
     except urllib.error.HTTPError as e:
         log.error(
             "telegram send failed to tg:%s status=%s body=%s",
-            chat_id, e.code,
+            chat_id,
+            e.code,
             e.read().decode("utf-8", errors="replace")[:300],
         )
         return False
@@ -143,7 +144,10 @@ def _process_telegram_and_reply(
     sender_id = f"tg:{chat_id}"
     try:
         reply = handle_message(
-            sender_id, text, image_b64=image_b64, image_mime=image_mime,
+            sender_id,
+            text,
+            image_b64=image_b64,
+            image_mime=image_mime,
         )
     except Exception:
         log.exception("agent failure for %s", sender_id)
@@ -175,7 +179,9 @@ def telegram_inbound() -> Response:
 
     log.info(
         "telegram inbound from=tg:%s len=%d photo=%s",
-        chat_id, len(text), "yes" if image_b64 else "no",
+        chat_id,
+        len(text),
+        "yes" if image_b64 else "no",
     )
     threading.Thread(
         target=_process_telegram_and_reply,
@@ -188,6 +194,7 @@ def telegram_inbound() -> Response:
 # ---------------------------------------------------------------------------
 # Admin: add a member (called by router after invite-code redemption)
 # ---------------------------------------------------------------------------
+
 
 @app.post("/admin/add-member")
 def admin_add_member() -> Response:
@@ -222,7 +229,9 @@ def admin_add_member() -> Response:
         i = 0
         while i < len(rest_lines) and rest_lines[i].startswith("- "):
             i += 1
-        new_content = head + "Members:\n" + "".join(rest_lines[:i]) + new_line + "".join(rest_lines[i:])
+        new_content = (
+            head + "Members:\n" + "".join(rest_lines[:i]) + new_line + "".join(rest_lines[i:])
+        )
     else:
         new_content = existing.rstrip() + "\n" + new_line
 

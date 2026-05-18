@@ -4,6 +4,7 @@ The agent (agent.py system prompt) tells Claude how to write entries;
 the scheduler (scheduler.py) parses them. Both pull from this module so
 a format change can't drift between them.
 """
+
 from __future__ import annotations
 
 import re

@@ -14,6 +14,7 @@ Covers:
 
 Run with: PYTHONPATH=. python3 test_recurring_reminders.py
 """
+
 from __future__ import annotations
 
 import sys
@@ -21,7 +22,6 @@ import tempfile
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
-
 
 PASS = "\033[32m✓\033[0m"
 FAIL = "\033[31m✗\033[0m"
@@ -42,16 +42,16 @@ def test_repeat_re_shapes() -> None:
     from reminder_format import REPEAT_RE
 
     cases: list[tuple[str, str | None]] = [
-        ("repeat:daily",        "daily"),
-        ("repeat:weekly",       "weekly"),
-        ("repeat:hourly",       "hourly"),
-        ("repeat:5m",           "5m"),
-        ("repeat:2h",           "2h"),
-        ("repeat:3d",           "3d"),
-        ("repeat:90s",          None),    # seconds not supported
-        ("repeat:monthly",      None),    # only daily/weekly/hourly/Nm/Nh/Nd
-        ("nrepeat:daily",       None),    # word-boundary
-        ("",                    None),
+        ("repeat:daily", "daily"),
+        ("repeat:weekly", "weekly"),
+        ("repeat:hourly", "hourly"),
+        ("repeat:5m", "5m"),
+        ("repeat:2h", "2h"),
+        ("repeat:3d", "3d"),
+        ("repeat:90s", None),  # seconds not supported
+        ("repeat:monthly", None),  # only daily/weekly/hourly/Nm/Nh/Nd
+        ("nrepeat:daily", None),  # word-boundary
+        ("", None),
     ]
     for text, expected in cases:
         m = REPEAT_RE.search(text)
@@ -70,14 +70,14 @@ def test_parse_interval() -> None:
     from scheduler import _parse_repeat_interval
 
     cases: list[tuple[str, timedelta | None]] = [
-        ("daily",   timedelta(days=1)),
-        ("weekly",  timedelta(days=7)),
-        ("hourly",  timedelta(hours=1)),
-        ("5m",      timedelta(minutes=5)),
-        ("2h",      timedelta(hours=2)),
-        ("3d",      timedelta(days=3)),
-        ("",        None),
-        ("bogus",   None),
+        ("daily", timedelta(days=1)),
+        ("weekly", timedelta(days=7)),
+        ("hourly", timedelta(hours=1)),
+        ("5m", timedelta(minutes=5)),
+        ("2h", timedelta(hours=2)),
+        ("3d", timedelta(days=3)),
+        ("", None),
+        ("bogus", None),
     ]
     for spec, expected in cases:
         got = _parse_repeat_interval(spec)
@@ -95,13 +95,13 @@ def test_strip_repeat() -> None:
     from scheduler import _strip_to_user_message
 
     cases: list[tuple[str, str]] = [
-        ("give Siya her vitamin D drops 💧 urg:normal repeat:daily",
-         "give Siya her vitamin D drops 💧"),
-        ("wash hands @Mamta repeat:daily from:wa:group:123.us",
-         "wash hands"),
+        (
+            "give Siya her vitamin D drops 💧 urg:normal repeat:daily",
+            "give Siya her vitamin D drops 💧",
+        ),
+        ("wash hands @Mamta repeat:daily from:wa:group:123.us", "wash hands"),
         # Existing strip behaviors still hold:
-        ("call vet urg:high (acked by Ankit at 2026-05-13 10:00)",
-         "call vet"),
+        ("call vet urg:high (acked by Ankit at 2026-05-13 10:00)", "call vet"),
     ]
     for raw, expected in cases:
         got = _strip_to_user_message(raw)
@@ -131,8 +131,10 @@ def test_schedules_next_line_daily() -> None:
             "(fired at 2026-05-13 09:00 chat:wa:group:120363.us msg:1)\n"
         )
 
-        with patch("scheduler.memories_dir", return_value=mem), \
-             patch("scheduler.reconcile") as mock_reconcile:
+        with (
+            patch("scheduler.memories_dir", return_value=mem),
+            patch("scheduler.reconcile") as mock_reconcile,
+        ):
             wrote = scheduler._maybe_schedule_next_occurrence(
                 "aaabbbccc111",
                 "2026-05-13 09:00",
@@ -141,26 +143,37 @@ def test_schedules_next_line_daily() -> None:
                 "(fired at 2026-05-13 09:00 chat:wa:group:120363.us msg:1)",
             )
             check("recur: returned True for daily reminder", wrote is True)
-            check("recur: reconcile invoked", mock_reconcile.call_count == 1,
-                  detail=f"calls={mock_reconcile.call_count}")
+            check(
+                "recur: reconcile invoked",
+                mock_reconcile.call_count == 1,
+                detail=f"calls={mock_reconcile.call_count}",
+            )
 
             new_content = reminders.read_text(encoding="utf-8")
             # Next line should be in the head section at 2026-05-14 09:00.
-            check("recur: head section has next-day line",
-                  "[2026-05-14 09:00]" in new_content,
-                  detail=new_content)
+            check(
+                "recur: head section has next-day line",
+                "[2026-05-14 09:00]" in new_content,
+                detail=new_content,
+            )
             # Body should preserve the message and repeat tag.
-            check("recur: next line carries the repeat tag",
-                  "repeat:daily" in new_content.split("## Fired")[0],
-                  detail=new_content.split("## Fired")[0])
-            check("recur: next line carries the message body",
-                  "give Siya her vitamin D drops" in new_content.split("## Fired")[0],
-                  detail=new_content.split("## Fired")[0])
+            check(
+                "recur: next line carries the repeat tag",
+                "repeat:daily" in new_content.split("## Fired")[0],
+                detail=new_content.split("## Fired")[0],
+            )
+            check(
+                "recur: next line carries the message body",
+                "give Siya her vitamin D drops" in new_content.split("## Fired")[0],
+                detail=new_content.split("## Fired")[0],
+            )
             # Lifecycle annotations should NOT be carried over.
             head_text = new_content.split("## Fired")[0]
-            check("recur: lifecycle annotations stripped from new line",
-                  "(fired at" not in head_text,
-                  detail=head_text)
+            check(
+                "recur: lifecycle annotations stripped from new line",
+                "(fired at" not in head_text,
+                detail=head_text,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -181,30 +194,35 @@ def test_idempotent() -> None:
             "(fired at 2026-05-13 09:00 chat:wa:group:120363.us msg:1)\n"
         )
 
-        with patch("scheduler.memories_dir", return_value=mem), \
-             patch("scheduler.reconcile"):
+        with patch("scheduler.memories_dir", return_value=mem), patch("scheduler.reconcile"):
             scheduler._maybe_schedule_next_occurrence(
-                "aaabbbccc111", "2026-05-13 09:00",
+                "aaabbbccc111",
+                "2026-05-13 09:00",
                 "vitamin D drops @Ankit from:wa:group:120363.us urg:normal "
                 "repeat:daily id:aaabbbccc111",
             )
             content_after_first = reminders.read_text(encoding="utf-8")
             # Second call with identical input → no-op.
             scheduler._maybe_schedule_next_occurrence(
-                "aaabbbccc111", "2026-05-13 09:00",
+                "aaabbbccc111",
+                "2026-05-13 09:00",
                 "vitamin D drops @Ankit from:wa:group:120363.us urg:normal "
                 "repeat:daily id:aaabbbccc111",
             )
             content_after_second = reminders.read_text(encoding="utf-8")
-            check("recur: idempotent (file unchanged on second call)",
-                  content_after_first == content_after_second,
-                  detail="files diverged")
+            check(
+                "recur: idempotent (file unchanged on second call)",
+                content_after_first == content_after_second,
+                detail="files diverged",
+            )
             # Exactly ONE new line in head.
             head = content_after_second.split("## Fired")[0]
             next_count = head.count("[2026-05-14")
-            check("recur: exactly one next-day line in head, not two",
-                  next_count == 1,
-                  detail=f"count={next_count}")
+            check(
+                "recur: exactly one next-day line in head, not two",
+                next_count == 1,
+                detail=f"count={next_count}",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -225,18 +243,18 @@ def test_non_repeating_is_noop() -> None:
         )
         reminders.write_text(original)
 
-        with patch("scheduler.memories_dir", return_value=mem), \
-             patch("scheduler.reconcile") as mock_reconcile:
+        with (
+            patch("scheduler.memories_dir", return_value=mem),
+            patch("scheduler.reconcile") as mock_reconcile,
+        ):
             wrote = scheduler._maybe_schedule_next_occurrence(
-                "aaabbbccc111", "2026-05-13 09:00",
-                "one-off task @Ankit from:wa:group:120363.us urg:normal "
-                "id:aaabbbccc111",
+                "aaabbbccc111",
+                "2026-05-13 09:00",
+                "one-off task @Ankit from:wa:group:120363.us urg:normal id:aaabbbccc111",
             )
             check("recur: no repeat tag → returns False", wrote is False)
-            check("recur: reconcile NOT called for non-repeating",
-                  mock_reconcile.call_count == 0)
-            check("recur: file unchanged",
-                  reminders.read_text(encoding="utf-8") == original)
+            check("recur: reconcile NOT called for non-repeating", mock_reconcile.call_count == 0)
+            check("recur: file unchanged", reminders.read_text(encoding="utf-8") == original)
 
 
 # ---------------------------------------------------------------------------
@@ -257,17 +275,18 @@ def test_hourly_interval() -> None:
             "(fired at 2026-05-13 09:00 chat:wa:group:120363.us msg:1)\n"
         )
 
-        with patch("scheduler.memories_dir", return_value=mem), \
-             patch("scheduler.reconcile"):
+        with patch("scheduler.memories_dir", return_value=mem), patch("scheduler.reconcile"):
             scheduler._maybe_schedule_next_occurrence(
-                "bbbcccddd222", "2026-05-13 09:00",
-                "check monitor @Ankit from:wa:group:120363.us urg:low "
-                "repeat:2h id:bbbcccddd222",
+                "bbbcccddd222",
+                "2026-05-13 09:00",
+                "check monitor @Ankit from:wa:group:120363.us urg:low repeat:2h id:bbbcccddd222",
             )
             content = reminders.read_text(encoding="utf-8")
-            check("recur: 2-hour repeat schedules at +2h",
-                  "[2026-05-13 11:00]" in content,
-                  detail=content)
+            check(
+                "recur: 2-hour repeat schedules at +2h",
+                "[2026-05-13 11:00]" in content,
+                detail=content,
+            )
 
 
 # ---------------------------------------------------------------------------

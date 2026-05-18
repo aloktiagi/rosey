@@ -13,12 +13,12 @@ Format choice: structured timestamps + @mentions are cheap to parse and
 hard for the LLM to mess up. Free-form natural-language dates would
 constantly drift.
 """
+
 from __future__ import annotations
 
 import logging
 import os
 from datetime import datetime
-from pathlib import Path
 
 try:
     from zoneinfo import ZoneInfo  # 3.9+
@@ -120,9 +120,7 @@ def check_due() -> None:
                 sent_any = True
 
         if sent_any:
-            new_fired.append(
-                f"- [{ts_str}] {clean} (fired {now.strftime('%Y-%m-%d %H:%M')})"
-            )
+            new_fired.append(f"- [{ts_str}] {clean} (fired {now.strftime('%Y-%m-%d %H:%M')})")
             log.info("fired reminder: %r → %d recipient(s)", clean, len(recipients))
         else:
             # Couldn't send to anyone — keep it for retry next minute.
@@ -131,7 +129,9 @@ def check_due() -> None:
     if new_fired:
         log.info(
             "reminders.tick total=%d fired=%d still_pending=%d",
-            len(pending_lines), len(new_fired), len(new_pending),
+            len(pending_lines),
+            len(new_fired),
+            len(new_pending),
         )
 
     if not new_fired:

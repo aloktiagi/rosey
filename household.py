@@ -3,9 +3,9 @@
 Run once at setup, or whenever the household roster changes. Usage:
     python -m household
 """
+
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -34,7 +34,7 @@ def _member_id(member: dict) -> str:
         # Strip an accidental "tg:" prefix if it leaked through.
         s = str(tid).strip()
         if s.startswith("tg:"):
-            s = s[len("tg:"):]
+            s = s[len("tg:") :]
         return f"tg:{s}"
     if username := member.get("telegram_username"):
         u = str(username).lstrip("@").lower()
@@ -82,7 +82,9 @@ def members_from_household_md() -> list[dict]:
 def main() -> int:
     config_path = Path("household.toml")
     if not config_path.exists():
-        print("household.toml not found. Copy household.toml.example and fill it in.", file=sys.stderr)
+        print(
+            "household.toml not found. Copy household.toml.example and fill it in.", file=sys.stderr
+        )
         return 1
 
     config = tomllib.loads(config_path.read_text(encoding="utf-8"))
